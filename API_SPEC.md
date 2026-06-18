@@ -176,14 +176,14 @@ POST /api/v1/keys
 ```json
 {
   "name": "production-api-key",
-  "team_id": "team-abc123"
+  "description": "生产环境 API 调用专用 key"
 }
 ```
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `name` | string | 否 | Key 名称/备注，最长 128 字符 |
-| `team_id` | string | 是 | 所属 Team ID |
+| `description` | string | 否 | Key 用途描述，最长 512 字符 |
 
 **响应** `201 Created`
 
@@ -193,7 +193,8 @@ POST /api/v1/keys
   "data": {
     "id": "000129d9bfb397ab07534c35efd6a617cba8e00910e67bb63c2d49a68bff87f9",
     "name": "production-api-key",
-    "team_id": "team-abc123",
+    "description": "生产环境 API 调用专用 key",
+    "tags": ["production", "api"],
     "key": "sk-maas-000129d9bfb397ab07534c35efd6a617cba8e00910e67bb63c2d49a68bff87f9g7h8i9j0k1l2m3n4o5p6",
     "key_alias": "sk...o5p6",
     "status": "active",
@@ -203,7 +204,9 @@ POST /api/v1/keys
 }
 ```
 
-> ⚠️ **重要**：`key` 字段仅在本次响应中出现，后续查询不会再返回完整 Key 值，仅返回 `key_alias`（格式 `sk...xxxx`）用于识别。
+> ⚠️ **重要**：`key` 字段仅在本次响应中出现，后续查询不会再返回完整 Key 值，仅返回 `key_alias` 用于识别。
+> 本服务**不会存储 key 原值**，仅存储 key 的哈希值（`key_hash_id`）和脱敏别名（`key_alias`），请用户务必妥善保存。
+> `description` 会透传到 LiteLLM key 的 `metadata.description` 字段。
 
 ---
 
@@ -234,6 +237,7 @@ GET /api/v1/keys?page=1&page_size=20&status=active
       {
         "id": "000129d9bfb397ab07534c35efd6a617cba8e00910e67bb63c2d49a68bff87f9",
         "name": "production-api-key",
+        "description": "生产环境 API 调用专用 key",
         "team_id": "team-abc123",
         "key_alias": "sk...a1b2",
         "status": "active",

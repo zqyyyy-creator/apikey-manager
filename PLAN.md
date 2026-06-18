@@ -32,8 +32,8 @@
 - 检查机制（双层）：
   - **实时拦截**：LiteLLM 网关在请求前检查 `spend >= max_budget`，超限直接拒绝请求（`BudgetExceededError`）
   - **被动兜底**：本服务查询账单时同步检查消费状态，超限则更新 key 状态为 blocked
-- Spend 来源：通过 CustomLogger 回调，在每次请求完成后用本服务的计费逻辑替换 LiteLLM 默认计价，将消费金额写入 LiteLLM 的 DB + Redis 计数器
-- 告警：超限时可通过 webhook 通知（可选，一期可不做）
+- Spend 来源：通过 CustomLogger 回调，在每次请求完成后调用本服务 API 获取计费金额（替换 LiteLLM 默认计价），将消费金额写入 LiteLLM 的 DB + Redis 计数器。非 managed_key 走默认策略。
+- 告警：超限时可通过 webhook 通知（一期不做，预留 TODO 埋点，后续迭代加）
 - 解除 block：手动操作，或重置消费周期
 
 #### OAuth2 认证
@@ -76,7 +76,7 @@
 ```
 ┌──────────────┐     ┌──────────────────┐     ┌─────────────┐
 │   Client     │────▶│  FastAPI Service  │────▶│   MySQL 8    │
-│              │     │  (llm-3rd-api)    │     │  (key/阈值)   │
+│              │     │  (maas-v2-api)    │     │  (key/阈值)   │
 └──────────────┘     │                  │     └─────────────┘
                      │  ┌────────────┐  │
                      │  │ OAuth2     │  │     ┌──────────────┐
@@ -90,11 +90,13 @@
                      │                  │     └─────────────┘
                      │  ┌────────────┐  │
                      │  │ LiteLLM    │  │     ┌──────────────────────────────┐
-                     │  │ Sync       │──┼────▶│  LiteLLM Gateway (ds-api-gw) │
-                     │  │ Service    │  │     │                              │
-                     │  └────────────┘  │     │  ┌────────────────────────┐ │
-                     │                  │     │  │ CustomLogger           │ │
-                     └──────────────────┘     │  │ (替换默认计价→外部计费) │ │
+                     │  │ Sync via   │──┼────▶│  lag-proxy → LiteLLM Gateway │
+                     │  │ lag-proxy  │  │     │              (ds-api-gw)     │
+                     │  └────────────┘  │     │                              │
+                     │                  │     │  ┌────────────────────────┐ │
+                     └──────────────────┘     │  │ CustomLogger ★         │ │
+                                              │  │ (本仓库开发,部署在GW内) │ │
+                                              │  │ 调用本服务API获取计费   │ │
                                               │  └────────────────────────┘ │
                                               │  ┌────────────────────────┐ │
                                               │  │ Budget 检查 (实时拦截)  │ │
@@ -213,7 +215,7 @@ llm-3rd-api/
 │   │   ├── client.py           # LiteLLM 管理 API 客户端（/key/generate, /key/update, /key/{key}/reset_spend）
 │   │   ├── custom_logger.py    # ★ CustomLogger 实现：替换默认计价，用本服务计费逻辑
 │   │   ├── budget_sync.py      # 阈值→max_budget 同步逻辑
-│   │   └── cost_calculator.py  # 外部计费逻辑（查询 ClickHouse 或调用计费服务获取实际消费金额）
+│   │   └── cost_calculator.py  # 调用外部计费服务 API 获取实际消费金额（CNY）
 │   ├── middleware/              # 中间件
 │   │   ├── __init__.py
 │   │   ├── auth.py             # OAuth2 token 验证
@@ -317,7 +319,8 @@ GET    /health                              # 健康检查
 | key_hash_id | VARCHAR(100) PK | key 的 SHA-256 哈希，主键（与 key_team.key_hash_id 对齐） |
 | team_id | VARCHAR(100) | 所属团队 (litellm team_id) |
 | name | VARCHAR(128) | key 名称/备注 |
-| key_alias | VARCHAR(16) | key 别名，格式 `sk...xxxx`（xxxx 为 key 后4位），用于展示识别 |
+| key_alias | VARCHAR(64) | key 别名（透传 LiteLLM 的 key_alias，用于展示识别） |
+| description | VARCHAR(512) | key 用途描述（透传 LiteLLM 的 metadata.description） |
 | status | ENUM('active','blocked','revoked') | key 状态 |
 | blocked_reason | VARCHAR(256) | block 原因 |
 | created_at | DATETIME | 创建时间 |
@@ -327,8 +330,9 @@ GET    /health                              # 健康检查
 **与原设计的变化**：
 - ~~PostgreSQL → MySQL 8~~
 - ~~`id UUID` 自增主键 → `key_hash_id VARCHAR(100)` 自然主键~~（一个 key 一条记录，key_hash_id 天然唯一，与 key_team / billing_record / billing_usage_window / key_profile 关联链路一致）
-- ~~`key_prefix` → `key_alias`~~，值从 `sk-maas-a1b2` 改为 `sk...xxxx`（xxxx 为 key 后4位）
+- ~~`key_prefix` → `key_alias`~~，透传 LiteLLM 的 `key_alias` 字段（最长 64）
 - ~~`key_hash VARCHAR(128)` → `key_hash_id VARCHAR(100)`~~（对齐 maas-v2-backend 命名）
+- 新增 `description`（透传 LiteLLM `metadata.description`）
 
 ### 4.2 MySQL 8 — client_user_mapping 表
 
@@ -571,6 +575,10 @@ ORDER BY billing_date DESC, cost DESC
      | `OAUTH2_TOKEN_CACHE_DEFAULT_TTL` | token 缓存默认 TTL（秒） | `300` |
      | `DEFAULT_CLIENT_ID` | 默认 OAuth2 client_id | `maas2ss` |
      | `ENABLE_DOCS` | 是否开启 Swagger/ReDoc 文档（`true`/`false`） | `true` |
+     | `INTERNAL_API_KEY` | 内部接口 API Key（供 CustomLogger 调用） | `xxx` |
+     | `COST_CACHE_MANAGED_TTL` | managed 状态缓存 TTL（秒） | `300` |
+     | `COST_CACHE_RATE_TTL` | 模型费率缓存 TTL（秒），与账单10分钟周期对齐 | `600` |
+     | `BILLING_SERVICE_URL` | 外部计费服务 API 地址 | `http://billing-service:8080` |
 
 2. **搭建 FastAPI 应用框架**
    - `app/main.py`：创建 FastAPI 实例，注册路由、中间件
@@ -631,6 +639,24 @@ ORDER BY billing_date DESC, cost DESC
 
 7. **Key CRUD 接口**
    - `POST /api/v1/keys`：创建 key → 调用 LiteLLM `/key/generate` 生成 key + 写入 managed_keys 表
+
+     **⚠️ Key 原值安全处理（关键约束）**：
+     - key 原值（如 `sk-xxxx...`）**仅**在创建响应中原样返回给用户，**不可在本服务中持久化存储**
+     - 本服务只存储 `key_hash_id`（SHA-256 哈希）和 `key_alias`（脱敏别名，如 LiteLLM 返回的 `sk...xxxx`）
+     - key 原值**不可写入日志**（structlog 需过滤敏感字段）
+     - key 原值**不可写入数据库**（managed_keys 表无明文字段）
+     - 流程：LiteLLM `/key/generate` 返回 key 原值 → 本服务从响应中提取 `key_hash_id`（哈希）和 `key_alias`（脱敏）存库 → 将 key 原值透传给用户响应 → 丢弃，不落任何持久化存储
+
+     ```
+     LiteLLM /key/generate 响应
+       │
+       ├─ key 原值: "sk-abc123..."     ──▶ 透传给用户响应（仅此一次）
+       ├─ key_hash_id: SHA256(key)     ──▶ 存入 managed_keys 表
+       └─ key_alias: "sk...c123"       ──▶ 存入 managed_keys 表
+
+     ⛔ 禁止：key 原值写入 DB / 日志 / 缓存 / 任何持久化存储
+     ```
+
    - `GET /api/v1/keys`：分页列表，支持 team_id 过滤
    - `GET /api/v1/keys/{key_id}`：详情
    - `PATCH /api/v1/keys/{key_id}/revoke`：吊销 key → 调用 LiteLLM `/key/update` 设 blocked + 更新 managed_keys 状态
@@ -670,30 +696,158 @@ ORDER BY billing_date DESC, cost DESC
 
 12. **超限 Block/Unblock 逻辑**
     - 被动检查：查询账单时触发阈值检查，超限 → 更新 managed_keys.status = blocked
+    - TODO: block 后 webhook/通知（一期不做，预留 `_notify_key_blocked(key_id, reason)` 埋点）
     - 实时拦截：LiteLLM budget 检查已在前置拦截（spend >= max_budget → 429）
     - `PATCH /api/v1/keys/{key_id}/unblock`：手动解除 → 调用 LiteLLM `/key/{key}/reset_spend` 重置 spend + 更新 managed_keys 状态
 
 ### Phase 6: CustomLogger — 替换默认计价 (Day 7-8) ★
+
+> **⚠️ 架构关键点**：CustomLogger 代码运行在 LiteLLM Gateway（ds-api-gw）进程内，不在本服务（maas-v2-client-api）进程中。
+> CustomLogger 通过 HTTP 调用本服务的 RESTful 接口获取 managed_key 的消费金额，替换 LiteLLM 默认计价。
+> **非 managed_key 的 key 不受影响**，继续走 LiteLLM 原有的 budget 策略。
+> 部署方式：CustomLogger 作为一个 Python 文件放入 ds-api-gateway，环境变量配置本服务地址即可，无需 pip 安装。
+
 13. **CustomLogger 实现**
-    - `app/litellm_integration/custom_logger.py`：继承 `litellm.CustomLogger`
+    - 代码位置：`app/litellm_integration/custom_logger.py`（在本服务仓库中开发维护，部署时复制到 ds-api-gateway）
+    - 继承 `litellm.CustomLogger`
     - 实现 `async_log_success_event()`：
       1. 从 kwargs 提取 key (token)、model、prompt_tokens、completion_tokens
-      2. 调用外部计费逻辑计算实际消费金额（替换 LiteLLM 默认计价）
+      2. 调用本服务 API：`GET /api/v1/internal/keys/{key_hash_id}/cost` 查询该 key 是否为 managed_key
+         - **是 managed_key**：用本服务返回的消费金额替换 LiteLLM 默认计价
+         - **非 managed_key**：跳过，走 LiteLLM 默认 budget 策略
       3. 调用 LiteLLM 内部 API 更新 spend：`increment_spend_counters()` + `DBSpendUpdateWriter`
-      4. 确保 Redis 计数器和 DB 的 spend 都使用外部计费金额
+      4. 确保 Redis 计数器和 DB 的 spend 都使用本服务返回的计费金额
     - 实现 `async_log_failure_event()`：释放预算预留
-    - 部署方式：在 LiteLLM Gateway 的 `config.yaml` 中注册：
-      ```yaml
-      litellm_settings:
-        success_callback: ["maas_custom_logger"]
-      ```
 
-14. **外部计费逻辑**
+14. **CustomLogger 部署方式**
+
+    ```yaml
+    # ds-api-gateway 环境变量
+    MAAS_V2_API_URL: "http://maas-v2-client-api:8000"  # 本服务地址
+
+    # ds-api-gateway 的 proxy_server_config.yaml
+    litellm_settings:
+      success_callback: ["maas_custom_logger"]
+      failure_callback: ["maas_custom_logger"]
+    ```
+
+    **部署流程**：
+    ```
+    maas-v2-client-api 仓库（开发维护）          ds-api-gateway（运行时）
+    ┌──────────────────────────────┐           ┌─────────────────────────────┐
+    │ app/litellm_integration/     │  ──CI──▶  │ custom_callbacks/           │
+    │   custom_logger.py           │  复制到    │   maas_custom_logger.py     │
+    └──────────────────────────────┘           └─────────────────────────────┘
+                                                │
+                                                │ env: MAAS_V2_API_URL
+                                                │ config.yaml 注册
+                                                ▼
+                                              LiteLLM Gateway 进程
+                                              运行时加载 CustomLogger
+    ```
+
+    - CustomLogger 通过环境变量 `MAAS_V2_API_URL` 获取本服务地址
+    - 仅需一个 Python 文件，放入 ds-api-gateway 的 callbacks 目录，PYTHONPATH 可达即可
+    - **无需 pip 安装**，无需打包
+
+15. **本服务新增内部接口**（供 CustomLogger 调用）
+
+    > 这些接口不对外暴露，仅供 LiteLLM Gateway 的 CustomLogger 内部调用，可走 K8s 内部网络。
+
+    ```
+    GET /api/v1/internal/keys/{key_hash_id}/cost?model=xxx&input_tokens=xxx&output_tokens=xxx&cache_tokens=xxx
+    ```
+
+    - 判断 key_hash_id 是否在 managed_keys 表中
+    - 若是：调用外部计费服务 API 计算消费金额，返回 CNY
+    - 若否：返回 `{"managed": false}`，CustomLogger 据此走默认逻辑
+    - 该接口不走 OAuth2 认证，走 K8s 内部网络或 API Key 认证
+
+    **缓存策略**（两层缓存，避免每次请求都查表或调外部接口）：
+
+    | 缓存层 | Key | Value | TTL | 说明 |
+    |--------|-----|-------|-----|------|
+    | **L1: 内存缓存** | `managed:{key_hash_id}` | `true` / `false` | 5 min | 判断 key 是否 managed，避免每次查 managed_keys 表 |
+    | **L2: 费率缓存** | `rate:{model}` | `{input_rate, output_rate, cache_rate}` | 10 min | 模型单价缓存，与账单产出周期对齐 |
+
+    缓存命中时的流程：
+    ```
+    请求 → L1 缓存查 managed?
+      ├─ 未命中 → 查 managed_keys 表 → 写入 L1 缓存
+      └─ 命中 →
+           ├─ managed=false → 返回 {"managed": false}
+           └─ managed=true → 计算 cost
+                ├─ L2 缓存查 model 费率
+                │   ├─ 未命中 → 调外部计费 API → 写入 L2 缓存
+                │   └─ 命中 → 直接用缓存的费率
+                └─ cost = input_rate × input_tokens + output_rate × output_tokens + cache_rate × cache_tokens
+                    → 返回 {"managed": true, "cost": ..., ...}
+    ```
+
+    缓存失效：
+    - key 状态变更（吊销/block/unblock）时主动清除当前实例 L1 缓存
+    - 阈值变更时无需清除（只影响 max_budget，不影响计费）
+    - 外部计费服务费率变更时，等 L2 自然过期（10min，与账单产出周期对齐）或手动清除
+
+    **多实例部署说明**：
+    - 采用内存缓存（`cachetools.TTLCache`），不引入 Redis
+    - L1（managed 状态）多实例间最多 5 分钟不一致，可接受：key 的吊销/block 由 LiteLLM Gateway 侧执行，本服务只改表状态，L1 仅决定计费逻辑分支
+    - L2（模型费率）所有实例从同一外部计费 API 取值，结果一致，独立缓存无问题
+
+    **响应**：
+    ```json
+    // managed key
+    {
+      "managed": true,
+      "cost": 0.052,           // CNY
+      "currency": "CNY",
+      "charge_detail": {
+        "input_cost": 0.040,
+        "output_cost": 0.010,
+        "cache_cost": 0.002
+      }
+    }
+
+    // non-managed key
+    {
+      "managed": false
+    }
+    ```
+
+16. **外部计费逻辑**
     - `app/litellm_integration/cost_calculator.py`：
-      - 根据模型、token 数量、请求类型计算实际消费金额
-      - 可查询 ClickHouse 历史计费表或使用内部定价规则
-      - 返回 CNY 金额（LiteLLM 内部以 USD 为单位，需做汇率转换，或统一用 USD 计量）
-    - ⚠️ 币种问题：LiteLLM budget 系统内部使用 USD，如果本服务以 CNY 计费，需要确定汇率换算策略
+      - 调用外部计费服务 API 获取实际消费金额（方案 C）
+      - 传入：模型、token 数量、请求类型等参数
+      - 返回 CNY 金额，budget 金额统一存 CNY，LiteLLM 仅做数值比较不关心币种
+
+    **整体交互时序**：
+    ```
+    Client 请求 ──▶ LiteLLM Gateway
+                      │
+                      ├─ 1. key 验证 + budget 检查（spend >= max_budget → 429）
+                      ├─ 2. 转发请求到 LLM Provider
+                      ├─ 3. 响应返回
+                      └─ 4. CustomLogger.async_log_success_event()
+                            │
+                            ├─ 4a. GET maas-v2-api/internal/keys/{hash}/cost
+                            │       ├─ managed_key → 返回外部计费金额 (CNY)
+                            │       └─ non-managed → 返回 {"managed": false}
+                            │
+                            ├─ 4b. if managed: 用返回金额替换默认计价
+                            │   if not managed: 走 LiteLLM 默认 budget 策略
+                            │
+                            ├─ 4c. increment_spend_counters() → 更新 Redis
+                            └─ 4d. DBSpendUpdateWriter → 更新 PostgreSQL
+
+    ══════════════════════════════════════════
+
+    maas-v2-client-api（本服务，独立部署）
+      │
+      ├─ 对外：管理 key 生命周期 → 通过 lag-proxy 调用 LiteLLM API
+      ├─ 对外：管理 spending_limits → 同步 max_budget 到 LiteLLM key
+      ├─ 对外：查询账单 → ClickHouse dbt
+      └─ 对内：提供 /internal/keys/{hash}/cost 接口 → 供 CustomLogger 调用
+    ```
 
 ### Phase 7: 测试 + 容器化 (Day 9-10)
 15. **单元测试 + 集成测试**
@@ -709,7 +863,7 @@ ORDER BY billing_date DESC, cost DESC
     - k8s/deployment.yaml
     - k8s/service.yaml
     - k8s/configmap.yaml
-    - CustomLogger 部署配置（litellm gateway sidecar 或共享卷）
+    - CustomLogger 部署配置（一个 .py 文件复制到 ds-api-gateway callbacks 目录，环境变量配本服务地址，config.yaml 注册）
 
 17. **文档收尾**
     - README.md：项目说明、本地启动、环境变量
@@ -744,8 +898,8 @@ ORDER BY billing_date DESC, cost DESC
 | ClickHouse dbt 表结构未确认 | 影响 Phase 4 账单查询 | 先按假设结构开发，预留适配层 |
 | Python 3.13 兼容性 | 极少数库可能尚未适配 | 开发初期验证所有依赖兼容性 |
 | LiteLLM CustomLogger 与内部 API 耦合 | CustomLogger 依赖 LiteLLM 内部函数（increment_spend_counters 等），版本升级可能 breaking | 封装适配层，锁定 LiteLLM 版本，关注 changelog |
-| 币种不一致（CNY vs USD） | LiteLLM budget 系统以 USD 计价，本服务以 CNY 计费 | 统一汇率换算，或 budget 金额按 CNY 设置、LiteLLM 仅做数值比较不关心币种 |
-| CustomLogger 部署位置 | CustomLogger 需部署在 LiteLLM Gateway 进程内 | 作为 litellm 包的自定义模块挂载，通过 config.yaml 注册 |
+| 币种不一致（CNY vs USD） | LiteLLM budget 系统以 USD 计价，本服务以 CNY 计费 | budget 金额存 CNY，LiteLLM 仅做数值比较不关心币种（已确认方案 A） |
+| CustomLogger 部署位置 | CustomLogger 运行在 LiteLLM Gateway 进程内，代码在本仓库维护 | 一个 Python 文件复制到 ds-api-gateway，环境变量 `MAAS_V2_API_URL` 配置本服务地址，config.yaml 注册 |
 | 消费阈值检查时机 | 仅被动查询时检查有滞后 | 实时拦截由 LiteLLM budget 保证，被动检查作为兜底 |
 
 ---
@@ -763,24 +917,15 @@ ORDER BY billing_date DESC, cost DESC
 | 5 | team_id 规则 | 服务端根据 user_id 自动拼接：生产 `AI_PRD_{user_id}`，测试 `AI_TEST_{user_id}`；用户无需传 team_id |
 | 6 | client_id ↔ user_id 映射 | 新建 `client_user_mapping` 表存储 |
 | 7 | LiteLLM 网关调用方式 | 通过 `lag-proxy` 代理调用，调用时携带 `x-user-id` header |
+| 8 | introspection 接口规范 | 参考 `lag-proxy` 的 `AuthService` 实现；URL 由 `OAUTH2_INTROSPECT_URL` 环境变量配置；请求方式 POST `data={"token": token}`；响应中按 OAuth2 标准取 `client_id` 字段 |
+| 9 | 消费阈值粒度 | 不支持按模型分别设限，阈值以 key 为粒度（daily / total） |
+| 10 | block 后 webhook/通知 | 一期不做，预留 TODO 埋点，后续迭代加 |
+| 11 | 币种策略 | 方案 A：budget 金额存 CNY，LiteLLM 仅做数值比较（`spend >= max_budget`），不关心币种 |
+| 12 | 外部计费逻辑数据源 | 方案 C：调用外部计费服务的 API（实时但增加延迟），CustomLogger 不内置定价规则 |
+| 13 | CustomLogger 部署方式 | 一个 Python 文件放入 ds-api-gateway，环境变量 `MAAS_V2_API_URL` 配置本服务地址，无需 pip 安装 |
+| 14 | CustomLogger 与本服务交互 | CustomLogger 调用本服务 `/api/v1/internal/keys/{hash}/cost` 接口获取消费金额；非 managed_key 走 LiteLLM 默认策略 |
 
 ### ❓ 待确认
-
-1. **自研认证中心 introspection 接口规范**：URL、请求格式、响应字段（client_id 在响应中的字段名）
-2. **Key 的使用方式**：key 是直接作为 Bearer token 使用，还是用于签名请求？
-3. **消费阈值的粒度**：是否需要支持按模型分别设限？
-4. **block 后是否需要 webhook/通知**：一期是否需要？
-5. **★ 币种策略**：LiteLLM budget 系统以 USD 计价，本服务以 CNY 计费。如何统一？
-   - 方案 A：budget 金额存 CNY，LiteLLM 仅做数值比较（`spend >= max_budget`），不关心币种
-   - 方案 B：设置 budget 时做 CNY→USD 转换，LiteLLM 全链路用 USD
-6. **★ 外部计费逻辑的数据源**：CustomLogger 计算消费时，从哪里获取价格？
-   - 方案 A：查询 ClickHouse 中的历史计费记录（有延迟）
-   - 方案 B：本服务内置定价规则表（模型 → 单价），CustomLogger 直接计算
-   - 方案 C：调用外部计费服务的 API（实时但增加延迟）
-7. **★ CustomLogger 是否直接调用 LiteLLM 内部 API**：
-   - 方案 A：直接调用 `increment_spend_counters()` + `DBSpendUpdateWriter`（紧耦合，性能好）
-   - 方案 B：调用 LiteLLM `/key/update` API 更新 spend（松耦合，但有延迟）
-   - 方案 C：仅更新 Redis 计数器 + DB，绕过 LiteLLM 内部 API
 
 ---
 
