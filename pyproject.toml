@@ -1,0 +1,27 @@
+[project]
+name = "maas-v2-client-api"
+version = "0.1.0"
+description = "MaaS v2 client API service"
+authors = [
+    { name = "qyz", email = "zqyyyy@bu.edu" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "aiomysql>=0.3.2",
+    "alembic>=1.18.4",
+    "clickhouse-driver>=0.2.10",
+    "fastapi>=0.138.0",
+    "httpx>=0.28.1",
+    "litellm>=1.89.3",
+    "pydantic-settings>=2.14.2",
+    "sqlalchemy>=2.0.51",
+    "structlog>=26.1.0",
+    "uvicorn>=0.49.0",
+]
+
+[project.scripts]
+maas-v2-client-api = "app.main:run"
+
+[build-system]
+requires = ["uv_build>=0.11.16,<0.12.0"]
+build-backend = "uv_build"
