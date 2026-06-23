@@ -3,10 +3,12 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
 from app.config import get_settings
-from app.routers import health
+from app.middleware.logging import RequestLoggingMiddleware, configure_logging
+from app.routers import debug, health
 
 
 def create_app() -> FastAPI:
+    configure_logging()
     settings = get_settings()
     enable_docs = settings.enable_docs
 
@@ -24,7 +26,10 @@ def create_app() -> FastAPI:
         swagger_ui_parameters={"persistAuthorization": True},
     )
 
+    app.add_middleware(RequestLoggingMiddleware)
+
     app.include_router(health.router)
+    app.include_router(debug.router)
 
     def custom_openapi() -> dict[str, object]:
         if app.openapi_schema:
