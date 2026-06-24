@@ -69,7 +69,10 @@ class AuthService:
             ) as client:
                 response = await client.post(
                     self.settings.oauth2_introspect_url,
-                    data={"token": token},
+                    data={
+                        "token": token,
+                        "client_id": self.settings.default_client_id,
+                    },
                 )
                 response.raise_for_status()
                 data = response.json()

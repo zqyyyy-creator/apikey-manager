@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
+import httpx
 import pytest
 
 from app.dependencies import get_current_auth_context
@@ -16,7 +17,27 @@ def test_debug_auth_requires_bearer_token() -> None:
     response = client.get("/api/v1/debug/auth", headers={"x-user-id": "12345"})
 
     assert response.status_code == 401
-    assert response.json() == {"detail": "Missing bearer token"}
+    assert response.json() == {
+        "code": 40100,
+        "data": None,
+        "message": "Missing bearer token",
+    }
+    assert response.headers["x-trace-id"]
+
+
+def test_debug_auth_missing_x_user_id_uses_unified_error_response() -> None:
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/v1/debug/auth",
+        headers={"Authorization": "Bearer fake-token"},
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == 40000
+    assert body["message"] == "Request parameter error"
+    assert body["data"]["errors"][0]["loc"] == ["header", "x-user-id"]
     assert response.headers["x-trace-id"]
 
 
@@ -38,9 +59,13 @@ def test_debug_auth_can_use_dependency_override() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "client_id": "maas2ss",
-        "user_id": "12345",
-        "team_id": "AI_TEST_12345",
+        "code": 0,
+        "data": {
+            "client_id": "maas2ss",
+            "user_id": "12345",
+            "team_id": "AI_TEST_12345",
+        },
+        "message": "success",
     }
 
 
@@ -77,3 +102,29 @@ def test_auth_service_rejects_mismatched_user_id() -> None:
                 x_user_id="67890",
             )
         )
+
+
+def test_auth_service_introspection_sends_configured_client_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_data = {}
+
+    async def fake_post(self, url, data):  # noqa: ANN001
+        captured_data.update(data)
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            200,
+            json={"active": True, "client_id": "maas2ss"},
+            request=request,
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", fake_post)
+
+    service = AuthService()
+    data = asyncio.run(service.introspect_token("fake-token"))
+
+    assert data == {"active": True, "client_id": "maas2ss"}
+    assert captured_data == {
+        "token": "fake-token",
+        "client_id": "maas2ss",
+    }

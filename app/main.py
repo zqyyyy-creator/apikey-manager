@@ -1,10 +1,20 @@
 import uvicorn
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.config import get_settings
+from app.exceptions import (
+    AppException,
+    app_exception_handler,
+    http_exception_handler,
+    unhandled_exception_handler,
+    validation_exception_handler,
+)
+from app.middleware.auth import get_current_auth_context
 from app.middleware.logging import RequestLoggingMiddleware, configure_logging
-from app.routers import debug, health
+from app.routers import debug, health, managed_keys
 
 
 def create_app() -> FastAPI:
@@ -27,9 +37,14 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_exception_handler(AppException, app_exception_handler)
+    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
+    app.add_exception_handler(RequestValidationError, validation_exception_handler)
+    app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(health.router)
-    app.include_router(debug.router)
+    app.include_router(debug.router, dependencies=[Depends(get_current_auth_context)])
+    app.include_router(managed_keys.router)
 
     def custom_openapi() -> dict[str, object]:
         if app.openapi_schema:
