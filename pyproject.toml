@@ -9,6 +9,7 @@ requires-python = ">=3.13"
 dependencies = [
     "aiomysql>=0.3.2",
     "alembic>=1.18.4",
+    "asyncmy>=0.2.11",
     "clickhouse-driver>=0.2.10",
     "cryptography>=46.0.3",
     "fastapi>=0.138.0",

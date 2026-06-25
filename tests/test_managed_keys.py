@@ -28,6 +28,7 @@ def auth_context() -> AuthContext:
         client_id="maas2ss",
         user_id="12345",
         team_id="AI_TEST_12345",
+        access_token="token_123",
     )
 
 

@@ -34,6 +34,7 @@ def test_generate_key_calls_lag_proxy_with_user_header() -> None:
             return await client.generate_key(
                 team_id="AI_TEST_12345",
                 user_id="12345",
+                access_token="token_123",
                 name="production-api-key",
                 description="生产环境 API 调用专用 key",
             )
@@ -47,6 +48,7 @@ def test_generate_key_calls_lag_proxy_with_user_header() -> None:
     assert captured_request.method == "POST"
     assert str(captured_request.url) == "http://lag-proxy/key/generate"
     assert captured_request.headers["x-user-id"] == "12345"
+    assert captured_request.headers["authorization"] == "Bearer token_123"
 
     payload = json.loads(captured_request.content)
     assert payload == {
@@ -83,6 +85,7 @@ def test_generate_key_accepts_wrapped_data_response() -> None:
             return await client.generate_key(
                 team_id="AI_TEST_12345",
                 user_id="12345",
+                access_token="token_123",
             )
 
     generated = asyncio.run(run_test())
@@ -105,12 +108,60 @@ def test_block_and_unblock_key_call_expected_paths() -> None:
                 http_client=http_client,
             )
 
-            await client.block_key(key="hash_001", user_id="12345", reason="test")
-            await client.unblock_key(key="hash_001", user_id="12345")
+            await client.block_key(
+                key="hash_001",
+                user_id="12345",
+                access_token="token_123",
+                reason="test",
+            )
+            await client.unblock_key(
+                key="hash_001",
+                user_id="12345",
+                access_token="token_123",
+            )
 
     asyncio.run(run_test())
 
     assert seen_paths == ["/key/block", "/key/unblock"]
+
+
+def test_update_key_can_clear_budget_and_send_budget_limits() -> None:
+    captured_payload = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content)
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async def run_test() -> None:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = LiteLLMClient(
+                base_url="http://lag-proxy",
+                http_client=http_client,
+            )
+
+            await client.update_key(
+                key="hash_001",
+                user_id="12345",
+                access_token="token_123",
+                clear_max_budget=True,
+                clear_budget_duration=True,
+                budget_limits=[
+                    {"budget_duration": "1d", "max_budget": "100.00"},
+                ],
+            )
+
+    asyncio.run(run_test())
+
+    assert captured_payload == {
+        "key": "hash_001",
+        "max_budget": None,
+        "budget_duration": None,
+        "budget_limits": [
+            {"budget_duration": "1d", "max_budget": "100.00"},
+        ],
+    }
 
 
 def test_lag_proxy_http_error_raises_domain_error() -> None:
@@ -126,6 +177,10 @@ def test_lag_proxy_http_error_raises_domain_error() -> None:
             )
 
             with pytest.raises(LagProxyError):
-                await client.get_key_info(key="hash_001", user_id="12345")
+                await client.get_key_info(
+                    key="hash_001",
+                    user_id="12345",
+                    access_token="token_123",
+                )
 
     asyncio.run(run_test())

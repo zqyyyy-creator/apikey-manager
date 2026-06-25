@@ -37,6 +37,7 @@ class ManagedKeyService:
             generated_key = await self.litellm_client.generate_key(
                 team_id=auth.team_id,
                 user_id=auth.user_id,
+                access_token=auth.access_token,
                 name=request.name,
                 description=request.description,
             )
@@ -134,6 +135,7 @@ class ManagedKeyService:
             await self.litellm_client.block_key(
                 key=managed_key.key_hash_id,
                 user_id=auth.user_id,
+                access_token=auth.access_token,
                 reason=request.reason,
             )
         except LagProxyError as exc:
@@ -181,6 +183,7 @@ class ManagedKeyService:
             await self.litellm_client.unblock_key(
                 key=managed_key.key_hash_id,
                 user_id=auth.user_id,
+                access_token=auth.access_token,
                 reason=request.reason,
             )
         except LagProxyError as exc:

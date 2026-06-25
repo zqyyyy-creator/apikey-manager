@@ -127,4 +127,5 @@ class AuthService:
             client_id=client_id,
             user_id=mapped_user_id,
             team_id=self.build_team_id(mapped_user_id),
+            access_token=token,
         )

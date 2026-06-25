@@ -15,6 +15,8 @@ def test_openapi_includes_key_management_routes() -> None:
     assert "/api/v1/keys/{key_id}" in paths
     assert "/api/v1/keys/{key_id}/revoke" in paths
     assert "/api/v1/keys/{key_id}/unblock" in paths
+    assert "/api/v1/keys/{key_id}/limits" in paths
+    assert "/api/v1/keys/{key_id}/limits/{limit_id}" in paths
 
 
 def test_key_routes_require_authentication() -> None:

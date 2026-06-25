@@ -8,8 +8,13 @@ class Settings(BaseSettings):
     env_mode: str = Field(default="test", pattern="^(prod|test)$")
 
     database_url: str
-    clickhouse_url: str
-    clickhouse_db: str
+    ch_dbt_scheme: str = "https"
+    ch_dbt_host: str
+    ch_dbt_port: int = 8123
+    ch_dbt_user: str
+    ch_dbt_password: str
+    ch_dbt_database: str
+    ch_dbt_billing_table: str = "dws_para_statements_changelog"
 
     lag_proxy_url: str
     lag_proxy_timeout: float = 30.0
@@ -36,6 +41,26 @@ class Settings(BaseSettings):
     @property
     def team_id_prefix(self) -> str:
         return "AI_PRD" if self.env_mode == "prod" else "AI_TEST"
+
+    @property
+    def clickhouse_url(self) -> str:
+        return f"{self.ch_dbt_scheme}://{self.ch_dbt_host}:{self.ch_dbt_port}"
+
+    @property
+    def clickhouse_db(self) -> str:
+        return self.ch_dbt_database
+
+    @property
+    def clickhouse_user(self) -> str:
+        return self.ch_dbt_user
+
+    @property
+    def clickhouse_password(self) -> str:
+        return self.ch_dbt_password
+
+    @property
+    def clickhouse_billing_table(self) -> str:
+        return self.ch_dbt_billing_table
 
 
 @lru_cache

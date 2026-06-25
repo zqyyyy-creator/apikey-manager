@@ -47,6 +47,7 @@ def test_debug_auth_can_use_dependency_override() -> None:
             client_id="maas2ss",
             user_id="12345",
             team_id="AI_TEST_12345",
+            access_token="token_123",
         )
 
     app.dependency_overrides[get_current_auth_context] = fake_auth_context
@@ -64,6 +65,7 @@ def test_debug_auth_can_use_dependency_override() -> None:
             "client_id": "maas2ss",
             "user_id": "12345",
             "team_id": "AI_TEST_12345",
+            "access_token": "token_123",
         },
         "message": "success",
     }
@@ -86,6 +88,7 @@ def test_auth_service_authenticate_builds_auth_context() -> None:
         client_id="maas2ss",
         user_id="12345",
         team_id="AI_TEST_12345",
+        access_token="fake-token",
     )
 
 

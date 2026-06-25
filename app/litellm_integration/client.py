@@ -35,6 +35,7 @@ class LiteLLMClient:
         *,
         team_id: str,
         user_id: str,
+        access_token: str,
         name: str | None = None,
         description: str | None = None,
         max_budget: Decimal | None = None,
@@ -52,7 +53,12 @@ class LiteLLMClient:
         if budget_duration is not None:
             payload["budget_duration"] = budget_duration
 
-        data = await self._post("/key/generate", payload, user_id=user_id)
+        data = await self._post(
+            "/key/generate",
+            payload,
+            user_id=user_id,
+            access_token=access_token,
+        )
         return self._parse_generated_key(data)
 
     async def update_key(
@@ -60,62 +66,91 @@ class LiteLLMClient:
         *,
         key: str,
         user_id: str,
+        access_token: str,
         max_budget: Decimal | None = None,
+        clear_max_budget: bool = False,
         spend: Decimal | None = None,
         budget_duration: str | None = None,
+        clear_budget_duration: bool = False,
+        budget_limits: list[dict[str, Any]] | None = None,
         blocked: bool | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "key": key,
         }
-        if max_budget is not None:
+        if clear_max_budget:
+            payload["max_budget"] = None
+        elif max_budget is not None:
             payload["max_budget"] = str(max_budget)
         if spend is not None:
             payload["spend"] = str(spend)
-        if budget_duration is not None:
+        if clear_budget_duration:
+            payload["budget_duration"] = None
+        elif budget_duration is not None:
             payload["budget_duration"] = budget_duration
+        if budget_limits is not None:
+            payload["budget_limits"] = budget_limits
         if blocked is not None:
             payload["blocked"] = blocked
         if metadata is not None:
             payload["metadata"] = metadata
 
-        return await self._post("/key/update", payload, user_id=user_id)
+        return await self._post(
+            "/key/update",
+            payload,
+            user_id=user_id,
+            access_token=access_token,
+        )
 
     async def block_key(
         self,
         *,
         key: str,
         user_id: str,
+        access_token: str,
         reason: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"key": key}
         if reason is not None:
             payload["reason"] = reason
-        return await self._post("/key/block", payload, user_id=user_id)
+        return await self._post(
+            "/key/block",
+            payload,
+            user_id=user_id,
+            access_token=access_token,
+        )
 
     async def unblock_key(
         self,
         *,
         key: str,
         user_id: str,
+        access_token: str,
         reason: str | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {"key": key}
         if reason is not None:
             payload["reason"] = reason
-        return await self._post("/key/unblock", payload, user_id=user_id)
+        return await self._post(
+            "/key/unblock",
+            payload,
+            user_id=user_id,
+            access_token=access_token,
+        )
 
     async def get_key_info(
         self,
         *,
         key: str,
         user_id: str,
+        access_token: str,
     ) -> dict[str, Any]:
         return await self._get(
             "/key/info",
             params={"key": key},
             user_id=user_id,
+            access_token=access_token,
         )
 
     async def _post(
@@ -124,11 +159,13 @@ class LiteLLMClient:
         payload: dict[str, Any],
         *,
         user_id: str,
+        access_token: str,
     ) -> dict[str, Any]:
         return await self._request(
             "POST",
             path,
             user_id=user_id,
+            access_token=access_token,
             json=payload,
         )
 
@@ -137,12 +174,14 @@ class LiteLLMClient:
         path: str,
         *,
         user_id: str,
+        access_token: str,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return await self._request(
             "GET",
             path,
             user_id=user_id,
+            access_token=access_token,
             params=params,
         )
 
@@ -152,13 +191,18 @@ class LiteLLMClient:
         path: str,
         *,
         user_id: str,
+        access_token: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        headers = {
+            "x-user-id": user_id,
+            "Authorization": f"Bearer {access_token}",
+        }
         try:
             response = await self._send_request(
                 method,
                 f"{self.base_url}{path}",
-                headers={"x-user-id": user_id},
+                headers=headers,
                 **kwargs,
             )
             response.raise_for_status()
