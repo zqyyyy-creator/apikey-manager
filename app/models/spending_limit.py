@@ -20,6 +20,8 @@ from app.database import Base
 
 class SpendingLimitType(StrEnum):
     DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
     TOTAL = "total"
 
 

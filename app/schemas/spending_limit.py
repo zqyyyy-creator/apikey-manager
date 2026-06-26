@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-LimitType = Literal["daily", "total"]
+LimitType = Literal["daily", "weekly", "monthly", "total"]
 
 
 class CreateSpendingLimitRequest(BaseModel):

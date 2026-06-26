@@ -27,7 +27,14 @@ class ClickHouseClient:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get(f"{self.url}/ping", auth=self.auth)
                 response.raise_for_status()
-                return response.text.strip() == "Ok."
+                body = response.text.strip()
+                if body == "Ok.":
+                    return True
+                try:
+                    payload = response.json()
+                except json.JSONDecodeError:
+                    return False
+                return payload.get("data", {}).get("message") == "pong"
         except httpx.HTTPError:
             return False
 
@@ -50,8 +57,14 @@ class ClickHouseClient:
                     auth=self.auth,
                 )
                 response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            body = exc.response.text[:2000]
+            raise ClickHouseError(
+                f"ClickHouse query failed: status={status_code}, body={body}"
+            ) from exc
         except httpx.HTTPError as exc:
-            raise ClickHouseError("ClickHouse query failed") from exc
+            raise ClickHouseError(f"ClickHouse query failed: {exc}") from exc
 
         rows = []
         for line in response.text.splitlines():

@@ -381,7 +381,7 @@ VALUES ('maas2ss', '{user_id}');
 |------|------|------|
 | id | BIGINT AUTO_INCREMENT | 主键 |
 | key_hash_id | VARCHAR(100) (FK → managed_keys.key_hash_id) | 关联 key |
-| limit_type | ENUM('daily','total') | 阈值类型：单日/累计总额 |
+| limit_type | ENUM('daily','weekly','monthly','total') | 阈值类型：自然日/自然周/自然月/累计总额 |
 | amount | DECIMAL(12,4) | 阈值金额 |
 | currency | VARCHAR(8) | 币种，默认 CNY |
 | enabled | BOOLEAN | 是否启用，默认 TRUE |
@@ -392,19 +392,20 @@ VALUES ('maas2ss', '{user_id}');
 
 | spending_limits 字段 | LiteLLM Key 字段 | 映射逻辑 |
 |---------------------|------------------|---------|
-| `limit_type='daily'` + `amount` | `max_budget` + `budget_duration='1d'` | 单日限额 → LiteLLM 每日重置的 max_budget |
+| `limit_type='daily'` + `amount` | `max_budget` + `budget_duration='1d'` | 自然日限额 → LiteLLM 每日重置的 max_budget |
+| `limit_type='weekly'` + `amount` | `max_budget` + `budget_duration='1w'` | 自然周限额 → LiteLLM 每周重置的 max_budget |
+| `limit_type='monthly'` + `amount` | `max_budget` + `budget_duration='1mo'` | 自然月限额 → LiteLLM 每月重置的 max_budget |
 | `limit_type='total'` + `amount` | `max_budget`（无 budget_duration） | 累计总额 → LiteLLM 硬性 max_budget |
 | `enabled=TRUE` | 同步设置 | 启用/禁用阈值 |
 | `enabled=FALSE` | `max_budget=null` | 禁用 → 清除 LiteLLM 的 max_budget |
 
-> ⚠️ 若同一 key 同时有 daily 和 total 限额，优先使用 total 的金额作为 `max_budget`（取较小值），
-> 或使用 LiteLLM 的 `budget_limits` 多窗口预算特性同时支持两个限额。
+> ⚠️ 若同一 key 同时有多个限额，使用 LiteLLM 的 `budget_limits` 多窗口预算特性同时支持自然日、自然周、自然月和累计总额限额。
 
 **与原设计的变化**：
 - ~~PostgreSQL → MySQL 8~~
 - ~~`id UUID` → `id BIGINT AUTO_INCREMENT`~~
 - ~~`key_id UUID (FK)` → `key_hash_id VARCHAR(100) (FK → managed_keys.key_hash_id)`~~（与 managed_keys 主键对齐，迁移到 maas-v2-backend 后可直接关联 key_team / billing_record 等）
-- ~~`limit_type VARCHAR(16)` → `limit_type ENUM('daily','total')`~~
+- ~~`limit_type VARCHAR(16)` → `limit_type ENUM('daily','weekly','monthly','total')`~~
 - ~~`currency 默认 USD` → `currency 默认 CNY`~~（对齐 maas-v2-backend 币种规范）
 
 ### 4.4 ClickHouse — 账单查询（dbt 已有表）
@@ -689,9 +690,11 @@ ORDER BY billing_date DESC, cost DESC
 11. **阈值→Budget 同步逻辑**
     - `app/litellm_integration/budget_sync.py`：
       - `sync_limit_to_budget(key_hash_id, limits)`：将 spending_limits 转换为 LiteLLM budget 参数并同步
-      - `daily limit` → `max_budget=amount, budget_duration='1d'`
+      - `daily limit` → `max_budget=amount, budget_duration='1d'`（自然日）
+      - `weekly limit` → `max_budget=amount, budget_duration='1w'`（自然周）
+      - `monthly limit` → `max_budget=amount, budget_duration='1mo'`（自然月）
       - `total limit` → `max_budget=amount`（无 budget_duration）
-      - `daily + total 同时存在` → 使用 `budget_limits` 多窗口：`[{"budget_duration":"1d","max_budget":daily_amount}, {"budget_duration":"30d","max_budget":total_amount}]`
+      - 多个限额同时存在 → 使用 `budget_limits` 多窗口：`[{"budget_duration":"1d","max_budget":daily_amount}, {"budget_duration":"1w","max_budget":weekly_amount}, {"budget_duration":"1mo","max_budget":monthly_amount}, {"budget_duration":null,"max_budget":total_amount}]`
       - `enabled=FALSE` → `max_budget=null`
 
 12. **超限 Block/Unblock 逻辑**
@@ -918,7 +921,7 @@ ORDER BY billing_date DESC, cost DESC
 | 6 | client_id ↔ user_id 映射 | 新建 `client_user_mapping` 表存储 |
 | 7 | LiteLLM 网关调用方式 | 通过 `lag-proxy` 代理调用，调用时携带 `x-user-id` header |
 | 8 | introspection 接口规范 | 参考 `lag-proxy` 的 `AuthService` 实现；URL 由 `OAUTH2_INTROSPECT_URL` 环境变量配置；请求方式 POST `data={"token": token}`；响应中按 OAuth2 标准取 `client_id` 字段 |
-| 9 | 消费阈值粒度 | 不支持按模型分别设限，阈值以 key 为粒度（daily / total） |
+| 9 | 消费阈值粒度 | 不支持按模型分别设限，阈值以 key 为粒度（daily / weekly / monthly / total） |
 | 10 | block 后 webhook/通知 | 一期不做，预留 TODO 埋点，后续迭代加 |
 | 11 | 币种策略 | 方案 A：budget 金额存 CNY，LiteLLM 仅做数值比较（`spend >= max_budget`），不关心币种 |
 | 12 | 外部计费逻辑数据源 | 方案 C：调用外部计费服务的 API（实时但增加延迟），CustomLogger 不内置定价规则 |

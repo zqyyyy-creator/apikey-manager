@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 
 KeyStatus = Literal["active", "blocked", "revoked"]
-LimitType = Literal["daily", "total"]
+LimitType = Literal["daily", "weekly", "monthly", "total"]
 
 
 class CreateKeyRequest(BaseModel):

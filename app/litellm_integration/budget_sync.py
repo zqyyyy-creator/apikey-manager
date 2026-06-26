@@ -5,6 +5,12 @@ from app.models.spending_limit import SpendingLimit, SpendingLimitType
 
 
 class BudgetSyncService:
+    PERIODIC_BUDGET_DURATIONS = {
+        SpendingLimitType.DAILY: "1d",
+        SpendingLimitType.WEEKLY: "1w",
+        SpendingLimitType.MONTHLY: "1mo",
+    }
+
     def __init__(self, litellm_client: LiteLLMClient | None = None) -> None:
         self.litellm_client = litellm_client or LiteLLMClient()
 
@@ -17,37 +23,46 @@ class BudgetSyncService:
         limits: list[SpendingLimit],
     ) -> None:
         enabled_limits = [limit for limit in limits if limit.enabled]
-        daily = self._find_limit(enabled_limits, SpendingLimitType.DAILY)
+        periodic_limits = [
+            limit
+            for limit in enabled_limits
+            if limit.limit_type in self.PERIODIC_BUDGET_DURATIONS
+        ]
         total = self._find_limit(enabled_limits, SpendingLimitType.TOTAL)
 
-        if daily is not None and total is not None:
+        if len(periodic_limits) + (1 if total is not None else 0) > 1:
+            budget_limits = [
+                {
+                    "budget_duration": self.PERIODIC_BUDGET_DURATIONS[limit.limit_type],
+                    "max_budget": str(limit.amount),
+                }
+                for limit in periodic_limits
+            ]
+            if total is not None:
+                budget_limits.append(
+                    {
+                        "budget_duration": None,
+                        "max_budget": str(total.amount),
+                    }
+                )
             await self.litellm_client.update_key(
                 key=key_hash_id,
                 user_id=user_id,
                 access_token=access_token,
                 clear_max_budget=True,
                 clear_budget_duration=True,
-                budget_limits=[
-                    {
-                        "budget_duration": "1d",
-                        "max_budget": str(daily.amount),
-                    },
-                    {
-                        "budget_duration": "30d",
-                        "max_budget": str(total.amount),
-                    },
-                ],
+                budget_limits=budget_limits,
             )
             return
 
-        if daily is not None:
+        if len(periodic_limits) == 1:
+            limit = periodic_limits[0]
             await self.litellm_client.update_key(
                 key=key_hash_id,
                 user_id=user_id,
                 access_token=access_token,
-                max_budget=Decimal(daily.amount),
-                budget_duration="1d",
-                budget_limits=[],
+                max_budget=Decimal(limit.amount),
+                budget_duration=self.PERIODIC_BUDGET_DURATIONS[limit.limit_type],
             )
             return
 
@@ -58,7 +73,6 @@ class BudgetSyncService:
                 access_token=access_token,
                 max_budget=Decimal(total.amount),
                 clear_budget_duration=True,
-                budget_limits=[],
             )
             return
 
@@ -68,7 +82,6 @@ class BudgetSyncService:
             access_token=access_token,
             clear_max_budget=True,
             clear_budget_duration=True,
-            budget_limits=[],
         )
 
     def _find_limit(

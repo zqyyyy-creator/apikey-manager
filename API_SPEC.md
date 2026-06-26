@@ -449,7 +449,7 @@ POST /api/v1/keys/{key_id}/limits
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `limit_type` | string | 是 | 阈值类型：`daily`（单日限额）/ `total`（累计总额限额） |
+| `limit_type` | string | 是 | 阈值类型：`daily`（自然日限额）/ `weekly`（自然周限额）/ `monthly`（自然月限额）/ `total`（累计总额限额） |
 | `amount` | number | 是 | 阈值金额，必须大于 0，最多 2 位小数 |
 | `currency` | string | 否 | 币种，默认 `USD` |
 | `enabled` | boolean | 否 | 是否启用，默认 `true` |
@@ -472,7 +472,7 @@ POST /api/v1/keys/{key_id}/limits
 }
 ```
 
-> 💡 同一 Key 可以同时设置 `daily` 和 `total` 两种阈值，任一超限都会触发阻断。
+> 💡 同一 Key 可以同时设置 `daily`、`weekly`、`monthly` 和 `total` 四种阈值，任一超限都会触发阻断。
 
 **错误场景**
 
@@ -836,11 +836,11 @@ GET /health
 
 ### Q: 同一个 Key 可以设置多个消费阈值吗？
 
-可以。每个 Key 最多设置两个阈值：一个 `daily`（单日限额）和一个 `total`（累计总额限额），任一超限都会触发阻断。
+可以。每个 Key 最多设置四个阈值：`daily`（自然日限额）、`weekly`（自然周限额）、`monthly`（自然月限额）和 `total`（累计总额限额），任一超限都会触发阻断。
 
 ### Q: 解除阻断后，之前累积的消费金额会重置吗？
 
-不会。`total` 类型的阈值基于累计消费，解除阻断不会重置。如果需要重置累计金额，建议删除旧阈值并重新创建。`daily` 类型的阈值按自然日重置。
+不会。`total` 类型的阈值基于累计消费，解除阻断不会重置。如果需要重置累计金额，建议删除旧阈值并重新创建。`daily`、`weekly`、`monthly` 分别按自然日、自然周、自然月重置。
 
 ### Q: 吊销的 Key 能否恢复？
 

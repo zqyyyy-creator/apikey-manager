@@ -25,6 +25,8 @@ managed_key_status = sa.Enum(
 )
 spending_limit_type = sa.Enum(
     "daily",
+    "weekly",
+    "monthly",
     "total",
     name="spending_limit_type",
 )

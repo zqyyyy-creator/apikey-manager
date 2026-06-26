@@ -14,7 +14,7 @@ from app.exceptions import (
 )
 from app.middleware.auth import get_current_auth_context
 from app.middleware.logging import RequestLoggingMiddleware, configure_logging
-from app.routers import billing, debug, health, managed_keys, spending_limits
+from app.routers import billing, debug, health, internal, managed_keys, spending_limits
 
 
 def create_app() -> FastAPI:
@@ -47,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(managed_keys.router)
     app.include_router(billing.router)
     app.include_router(spending_limits.router)
+    app.include_router(internal.router)
 
     def custom_openapi() -> dict[str, object]:
         if app.openapi_schema:

@@ -148,7 +148,7 @@ def make_limit(
     )
 
 
-def test_budget_sync_maps_daily_and_total_to_budget_limits() -> None:
+def test_budget_sync_maps_multiple_periods_to_budget_limits() -> None:
     import asyncio
 
     client = FakeLiteLLMClient()
@@ -161,6 +161,8 @@ def test_budget_sync_maps_daily_and_total_to_budget_limits() -> None:
             access_token="token_123",
             limits=[
                 make_limit(SpendingLimitType.DAILY, Decimal("100.00")),
+                make_limit(SpendingLimitType.WEEKLY, Decimal("500.00")),
+                make_limit(SpendingLimitType.MONTHLY, Decimal("1500.00")),
                 make_limit(SpendingLimitType.TOTAL, Decimal("1000.00")),
             ],
         )
@@ -175,8 +177,114 @@ def test_budget_sync_maps_daily_and_total_to_budget_limits() -> None:
             "clear_budget_duration": True,
             "budget_limits": [
                 {"budget_duration": "1d", "max_budget": "100.00"},
-                {"budget_duration": "30d", "max_budget": "1000.00"},
+                {"budget_duration": "1w", "max_budget": "500.00"},
+                {"budget_duration": "1mo", "max_budget": "1500.00"},
+                {"budget_duration": None, "max_budget": "1000.00"},
             ],
+        }
+    ]
+
+
+def test_budget_sync_maps_single_daily_limit_without_empty_budget_limits() -> None:
+    import asyncio
+
+    client = FakeLiteLLMClient()
+    service = BudgetSyncService(litellm_client=client)
+
+    asyncio.run(
+        service.sync_limits(
+            key_hash_id="hash_001",
+            user_id="12345",
+            access_token="token_123",
+            limits=[make_limit(SpendingLimitType.DAILY, Decimal("100.00"))],
+        )
+    )
+
+    assert client.calls == [
+        {
+            "key": "hash_001",
+            "user_id": "12345",
+            "access_token": "token_123",
+            "max_budget": Decimal("100.00"),
+            "budget_duration": "1d",
+        }
+    ]
+
+
+def test_budget_sync_maps_single_weekly_limit_without_empty_budget_limits() -> None:
+    import asyncio
+
+    client = FakeLiteLLMClient()
+    service = BudgetSyncService(litellm_client=client)
+
+    asyncio.run(
+        service.sync_limits(
+            key_hash_id="hash_001",
+            user_id="12345",
+            access_token="token_123",
+            limits=[make_limit(SpendingLimitType.WEEKLY, Decimal("500.00"))],
+        )
+    )
+
+    assert client.calls == [
+        {
+            "key": "hash_001",
+            "user_id": "12345",
+            "access_token": "token_123",
+            "max_budget": Decimal("500.00"),
+            "budget_duration": "1w",
+        }
+    ]
+
+
+def test_budget_sync_maps_single_monthly_limit_without_empty_budget_limits() -> None:
+    import asyncio
+
+    client = FakeLiteLLMClient()
+    service = BudgetSyncService(litellm_client=client)
+
+    asyncio.run(
+        service.sync_limits(
+            key_hash_id="hash_001",
+            user_id="12345",
+            access_token="token_123",
+            limits=[make_limit(SpendingLimitType.MONTHLY, Decimal("1500.00"))],
+        )
+    )
+
+    assert client.calls == [
+        {
+            "key": "hash_001",
+            "user_id": "12345",
+            "access_token": "token_123",
+            "max_budget": Decimal("1500.00"),
+            "budget_duration": "1mo",
+        }
+    ]
+
+
+def test_budget_sync_maps_single_total_limit_without_empty_budget_limits() -> None:
+    import asyncio
+
+    client = FakeLiteLLMClient()
+    service = BudgetSyncService(litellm_client=client)
+
+    asyncio.run(
+        service.sync_limits(
+            key_hash_id="hash_001",
+            user_id="12345",
+            access_token="token_123",
+            limits=[make_limit(SpendingLimitType.TOTAL, Decimal("1000.00"))],
+        )
+    )
+
+    assert client.calls == [
+        {
+            "key": "hash_001",
+            "user_id": "12345",
+            "access_token": "token_123",
+            "max_budget": Decimal("1000.00"),
+            "clear_budget_duration": True,
         }
     ]
 
@@ -203,6 +311,5 @@ def test_budget_sync_clears_budget_when_no_limits_enabled() -> None:
             "access_token": "token_123",
             "clear_max_budget": True,
             "clear_budget_duration": True,
-            "budget_limits": [],
         }
     ]

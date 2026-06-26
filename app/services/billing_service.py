@@ -2,6 +2,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+import structlog
 from fastapi import status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,11 +22,25 @@ from app.schemas.billing import (
     BillingSummaryPageData,
     BillingTotals,
 )
+from app.services.resource_key_mapping_service import ResourceKeyMappingService
+
+
+logger = structlog.get_logger()
 
 
 class BillingService:
-    def __init__(self, clickhouse_client: ClickHouseClient | None = None) -> None:
+    COUNT_CHARGE_TYPES = ("COUNT", "COUNT_API_TOKEN_OUTPUT")
+    INPUT_CHARGE_TYPES = ("INPUT", "TEXT_API_TOKEN_INPUT")
+    CACHE_CHARGE_TYPES = ("CACHE", "CACHE_API_TOKEN_INPUT")
+    OUTPUT_CHARGE_TYPES = ("OUTPUT", "TEXT_API_TOKEN_OUTPUT")
+
+    def __init__(
+        self,
+        clickhouse_client: ClickHouseClient | None = None,
+        resource_key_mapping: ResourceKeyMappingService | None = None,
+    ) -> None:
         self.clickhouse_client = clickhouse_client or get_clickhouse_client()
+        self.resource_key_mapping = resource_key_mapping or ResourceKeyMappingService()
 
     async def get_key_billing(
         self,
@@ -41,10 +56,14 @@ class BillingService:
     ) -> BillingPageData:
         start_date, end_date = self._resolve_date_range(start_date, end_date)
         managed_key = await self._get_owned_key(db, auth, key_id, with_limits=True)
+        resource_uuids = await self.resource_key_mapping.get_resource_uuids_for_key(
+            managed_key.key_hash_id
+        )
 
         rows = await self._query_key_billing_rows(
             auth=auth,
             key_id=managed_key.key_hash_id,
+            resource_uuids=resource_uuids,
             start_date=start_date,
             end_date=end_date,
             group_by=group_by,
@@ -92,13 +111,21 @@ class BillingService:
             )
 
         key_by_id = {key.key_hash_id: key for key in managed_keys}
+        resource_uuid_to_key_id = (
+            await self.resource_key_mapping.get_resource_uuid_map_for_keys(list(key_by_id))
+        )
         rows = await self._query_summary_rows(
             auth=auth,
-            key_ids=list(key_by_id),
+            resource_uuids=list(resource_uuid_to_key_id),
             start_date=start_date,
             end_date=end_date,
             group_by=group_by,
         )
+        rows = [
+            {**row, "key_id": resource_uuid_to_key_id[str(row["key_id"])]}
+            for row in rows
+            if str(row["key_id"]) in resource_uuid_to_key_id
+        ]
         items = [self._to_summary_item(row, key_by_id) for row in rows]
 
         return BillingSummaryPageData(
@@ -114,33 +141,45 @@ class BillingService:
         *,
         auth: AuthContext,
         key_id: str,
+        resource_uuids: list[str],
         start_date: date,
         end_date: date,
         group_by: BillingGroupBy,
     ) -> list[dict[str, Any]]:
+        if not resource_uuids:
+            return []
         date_select, model_select, group_fields = self._key_group_fields(group_by)
+        group_by_fields = self._group_fields_without_leading_comma(group_fields)
+        resource_uuid_list = ", ".join(
+            self._quote_clickhouse_string(resource_uuid)
+            for resource_uuid in resource_uuids
+        )
         start_time_ms, end_time_ms = self._date_range_to_millis(
             start_date,
             end_date,
         )
         latest_rows_sql = self._latest_billing_rows_sql(
-            extra_filters="AND resource_uuid = {key_id:String}",
+            extra_filters=f"AND source.resource_uuid IN ({resource_uuid_list})",
         )
+        count_charge_types = self._charge_type_condition(self.COUNT_CHARGE_TYPES)
+        input_charge_types = self._charge_type_condition(self.INPUT_CHARGE_TYPES)
+        cache_charge_types = self._charge_type_condition(self.CACHE_CHARGE_TYPES)
+        output_charge_types = self._charge_type_condition(self.OUTPUT_CHARGE_TYPES)
         sql = f"""
 SELECT
-    resource_uuid AS key_id,
+    {self._quote_clickhouse_string(key_id)} AS key_id,
     {date_select} AS date,
     {model_select} AS model,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'COUNT') AS request_count,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'INPUT') AS input_tokens,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'CACHE') AS cache_tokens,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'OUTPUT') AS output_tokens,
-    sumIf(toFloat64OrZero(used_value), charge_type = 'INPUT') AS input_cost,
-    sumIf(toFloat64OrZero(used_value), charge_type = 'CACHE') AS cache_cost,
-    sumIf(toFloat64OrZero(used_value), charge_type = 'OUTPUT') AS output_cost,
-    sum(toFloat64OrZero(used_value)) AS cost
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {count_charge_types}) AS request_count,
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {input_charge_types}) AS input_tokens,
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {cache_charge_types}) AS cache_tokens,
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {output_charge_types}) AS output_tokens,
+    sumIf(toFloat64OrZero(used_value), charge_type IN {input_charge_types}) AS input_cost,
+    sumIf(toFloat64OrZero(used_value), charge_type IN {cache_charge_types}) AS cache_cost,
+    sumIf(toFloat64OrZero(used_value), charge_type IN {output_charge_types}) AS output_cost,
+    sum(toFloat64(real_price)) AS cost
 FROM ({latest_rows_sql})
-GROUP BY resource_uuid{group_fields}
+GROUP BY {group_by_fields}
 ORDER BY date DESC, cost DESC
 FORMAT JSONEachRow
 """
@@ -148,7 +187,6 @@ FORMAT JSONEachRow
             sql,
             {
                 "user_id": auth.user_id,
-                "key_id": key_id,
                 "start_time": start_time_ms,
                 "end_time": end_time_ms,
             },
@@ -158,33 +196,42 @@ FORMAT JSONEachRow
         self,
         *,
         auth: AuthContext,
-        key_ids: list[str],
+        resource_uuids: list[str],
         start_date: date,
         end_date: date,
         group_by: BillingSummaryGroupBy,
     ) -> list[dict[str, Any]]:
+        if not resource_uuids:
+            return []
         date_select, model_select, group_fields = self._summary_group_fields(group_by)
-        key_id_list = ", ".join(self._quote_clickhouse_string(key_id) for key_id in key_ids)
+        resource_uuid_list = ", ".join(
+            self._quote_clickhouse_string(resource_uuid)
+            for resource_uuid in resource_uuids
+        )
         start_time_ms, end_time_ms = self._date_range_to_millis(
             start_date,
             end_date,
         )
         latest_rows_sql = self._latest_billing_rows_sql(
-            extra_filters=f"AND resource_uuid IN ({key_id_list})",
+            extra_filters=f"AND source.resource_uuid IN ({resource_uuid_list})",
         )
+        count_charge_types = self._charge_type_condition(self.COUNT_CHARGE_TYPES)
+        input_charge_types = self._charge_type_condition(self.INPUT_CHARGE_TYPES)
+        cache_charge_types = self._charge_type_condition(self.CACHE_CHARGE_TYPES)
+        output_charge_types = self._charge_type_condition(self.OUTPUT_CHARGE_TYPES)
         sql = f"""
 SELECT
     resource_uuid AS key_id,
     {date_select} AS date,
     {model_select} AS model,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'COUNT') AS total_request_count,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'INPUT') AS total_input_tokens,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'CACHE') AS total_cache_tokens,
-    sumIf(toFloat64OrZero(resource_used_count), charge_type = 'OUTPUT') AS total_output_tokens,
-    sumIf(toFloat64OrZero(used_value), charge_type = 'INPUT') AS total_input_cost,
-    sumIf(toFloat64OrZero(used_value), charge_type = 'CACHE') AS total_cache_cost,
-    sumIf(toFloat64OrZero(used_value), charge_type = 'OUTPUT') AS total_output_cost,
-    sum(toFloat64OrZero(used_value)) AS total_cost
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {count_charge_types}) AS total_request_count,
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {input_charge_types}) AS total_input_tokens,
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {cache_charge_types}) AS total_cache_tokens,
+    sumIf(toFloat64OrZero(resource_used_count), charge_type IN {output_charge_types}) AS total_output_tokens,
+    sumIf(toFloat64OrZero(used_value), charge_type IN {input_charge_types}) AS total_input_cost,
+    sumIf(toFloat64OrZero(used_value), charge_type IN {cache_charge_types}) AS total_cache_cost,
+    sumIf(toFloat64OrZero(used_value), charge_type IN {output_charge_types}) AS total_output_cost,
+    sum(toFloat64(real_price)) AS total_cost
 FROM ({latest_rows_sql})
 GROUP BY resource_uuid{group_fields}
 ORDER BY total_cost DESC
@@ -213,12 +260,13 @@ SELECT
     argMax(statement_resource, _seq_id) AS statement_resource,
     argMax(resource_used_count, _seq_id) AS resource_used_count,
     argMax(used_value, _seq_id) AS used_value,
+    argMax(real_price, _seq_id) AS real_price,
     argMax(is_backfill, _seq_id) AS is_backfill,
     argMax(billing_date, _seq_id) AS billing_date
-FROM {self.clickhouse_client.database}.{self.clickhouse_client.billing_table}
-WHERE service_user_id = {{user_id:String}}
-  AND start_time >= {{start_time:Int64}}
-  AND periodic_end_time < {{end_time:Int64}}
+FROM {self.clickhouse_client.database}.{self.clickhouse_client.billing_table} AS source
+WHERE source.service_user_id = {{user_id:String}}
+  AND source.start_time >= {{start_time:Int64}}
+  AND source.periodic_end_time < {{end_time:Int64}}
   {extra_filters}
 GROUP BY id
 HAVING _action != 'DELETE'
@@ -234,6 +282,12 @@ HAVING _action != 'DELETE'
         try:
             return await self.clickhouse_client.query_json_each_row(sql, params=params)
         except ClickHouseError as exc:
+            logger.warning(
+                "billing_clickhouse_query_failed",
+                error=str(exc),
+                sql=sql,
+                params=params,
+            )
             raise AppException(
                 code=ErrorCode.BILLING_SOURCE_UNAVAILABLE,
                 message="Billing data source unavailable",
@@ -288,9 +342,16 @@ HAVING _action != 'DELETE'
             return
 
         daily_costs: dict[date, Decimal] = {}
+        weekly_costs: dict[tuple[int, int], Decimal] = {}
+        monthly_costs: dict[tuple[int, int], Decimal] = {}
         for item in items:
             if item.date is not None:
                 daily_costs[item.date] = daily_costs.get(item.date, Decimal("0")) + item.cost
+                iso_year, iso_week, _ = item.date.isocalendar()
+                week_key = (iso_year, iso_week)
+                weekly_costs[week_key] = weekly_costs.get(week_key, Decimal("0")) + item.cost
+                month_key = (item.date.year, item.date.month)
+                monthly_costs[month_key] = monthly_costs.get(month_key, Decimal("0")) + item.cost
 
         for limit in managed_key.spending_limits:
             if not limit.enabled:
@@ -300,6 +361,22 @@ HAVING _action != 'DELETE'
             ):
                 managed_key.status = ManagedKeyStatus.BLOCKED
                 managed_key.blocked_reason = "Daily spending limit exceeded"
+                managed_key.blocked_at = datetime.utcnow()
+                await db.commit()
+                return
+            if limit.limit_type == SpendingLimitType.WEEKLY and any(
+                cost >= limit.amount for cost in weekly_costs.values()
+            ):
+                managed_key.status = ManagedKeyStatus.BLOCKED
+                managed_key.blocked_reason = "Weekly spending limit exceeded"
+                managed_key.blocked_at = datetime.utcnow()
+                await db.commit()
+                return
+            if limit.limit_type == SpendingLimitType.MONTHLY and any(
+                cost >= limit.amount for cost in monthly_costs.values()
+            ):
+                managed_key.status = ManagedKeyStatus.BLOCKED
+                managed_key.blocked_reason = "Monthly spending limit exceeded"
                 managed_key.blocked_at = datetime.utcnow()
                 await db.commit()
                 return
@@ -439,3 +516,10 @@ HAVING _action != 'DELETE'
 
     def _quote_clickhouse_string(self, value: str) -> str:
         return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+    def _charge_type_condition(self, values: tuple[str, ...]) -> str:
+        quoted_values = ", ".join(self._quote_clickhouse_string(value) for value in values)
+        return f"({quoted_values})"
+
+    def _group_fields_without_leading_comma(self, group_fields: str) -> str:
+        return group_fields[2:] if group_fields.startswith(", ") else group_fields
