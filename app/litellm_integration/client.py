@@ -1,5 +1,6 @@
 from decimal import Decimal
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel, Field
@@ -135,6 +136,21 @@ class LiteLLMClient:
         return await self._post(
             "/key/unblock",
             payload,
+            user_id=user_id,
+            access_token=access_token,
+        )
+
+    async def reset_key_spend(
+        self,
+        *,
+        key: str,
+        user_id: str,
+        access_token: str,
+        reset_to: Decimal = Decimal("0"),
+    ) -> dict[str, Any]:
+        return await self._post(
+            f"/key/{quote(key, safe='')}/reset_spend",
+            {"reset_to": str(reset_to)},
             user_id=user_id,
             access_token=access_token,
         )

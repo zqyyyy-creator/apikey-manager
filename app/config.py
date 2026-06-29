@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     cost_cache_managed_ttl: int = 300
     cost_cache_rate_ttl: int = 600
     billing_service_url: str
+    billing_service_cost_path: str = "/api/v1/cost/calculate"
+    billing_service_timeout: float = 5.0
 
     model_config = SettingsConfigDict(
         env_file=(".env"),

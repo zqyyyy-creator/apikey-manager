@@ -59,6 +59,23 @@ class ManagedKeyListItem(BaseModel):
     blocked_at: datetime | None
     revoked_at: datetime | None
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "000129d9bfb397ab07534c35efd6a617cba8e00910e67bb63c2d49a68bff87f9",
+                "name": "production-api-key",
+                "description": "生产环境 API 调用专用 key",
+                "team_id": "AI_TEST_SELF-xxx",
+                "key_alias": "sk...87f9",
+                "status": "active",
+                "created_at": "2026-06-29T10:00:00",
+                "blocked_reason": None,
+                "blocked_at": None,
+                "revoked_at": None,
+            }
+        }
+    }
+
 
 class SpendingLimitItem(BaseModel):
     id: int
@@ -67,15 +84,66 @@ class SpendingLimitItem(BaseModel):
     currency: str = "CNY"
     enabled: bool
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": 1,
+                "limit_type": "daily",
+                "amount": "100.00",
+                "currency": "CNY",
+                "enabled": True,
+            }
+        }
+    }
+
 
 class UsageSummary(BaseModel):
     today_cost: Decimal
     total_cost_7d: Decimal
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "today_cost": "23.45",
+                "total_cost_7d": "156.78",
+            }
+        }
+    }
+
 
 class ManagedKeyDetail(ManagedKeyListItem):
     spending_limits: list[SpendingLimitItem] = Field(default_factory=list)
     usage_summary: UsageSummary | None = None
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "000129d9bfb397ab07534c35efd6a617cba8e00910e67bb63c2d49a68bff87f9",
+                "name": "production-api-key",
+                "description": "生产环境 API 调用专用 key",
+                "team_id": "AI_TEST_SELF-xxx",
+                "key_alias": "sk...87f9",
+                "status": "active",
+                "created_at": "2026-06-29T10:00:00",
+                "blocked_reason": None,
+                "blocked_at": None,
+                "revoked_at": None,
+                "spending_limits": [
+                    {
+                        "id": 1,
+                        "limit_type": "daily",
+                        "amount": "100.00",
+                        "currency": "CNY",
+                        "enabled": True,
+                    }
+                ],
+                "usage_summary": {
+                    "today_cost": "23.45",
+                    "total_cost_7d": "156.78",
+                },
+            }
+        }
+    }
 
 
 class RevokeKeyRequest(BaseModel):
@@ -95,6 +163,16 @@ class RevokeKeyData(BaseModel):
     status: Literal["revoked"]
     revoked_at: datetime
 
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "000129d9bfb397ab07534c35efd6a617cba8e00910e67bb63c2d49a68bff87f9",
+                "status": "revoked",
+                "revoked_at": "2026-06-29T10:10:00",
+            }
+        }
+    }
+
 
 class UnblockKeyRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=256)
@@ -113,3 +191,14 @@ class UnblockKeyData(BaseModel):
     status: Literal["active"]
     blocked_reason: None = None
     blocked_at: None = None
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "000129d9bfb397ab07534c35efd6a617cba8e00910e67bb63c2d49a68bff87f9",
+                "status": "active",
+                "blocked_reason": None,
+                "blocked_at": None,
+            }
+        }
+    }

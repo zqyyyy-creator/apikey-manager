@@ -13,6 +13,11 @@ from app.schemas.spending_limit import (
     SpendingLimitListData,
     UpdateSpendingLimitRequest,
 )
+from app.schemas.openapi import (
+    COMMON_ERROR_RESPONSES,
+    CONFLICT_RESPONSE,
+    UPSTREAM_ERROR_RESPONSE,
+)
 from app.services.spending_limit_service import SpendingLimitService
 
 
@@ -27,6 +32,12 @@ def get_spending_limit_service() -> SpendingLimitService:
     "",
     response_model=ApiResponse[SpendingLimitData],
     status_code=status.HTTP_201_CREATED,
+    summary="创建消费阈值",
+    description=(
+        "为指定 managed key 创建 daily、weekly、monthly 或 total 阈值。"
+        "阈值金额按 CNY 处理，并会同步到 LiteLLM budget 配置。"
+    ),
+    responses={**COMMON_ERROR_RESPONSES, **CONFLICT_RESPONSE, **UPSTREAM_ERROR_RESPONSE},
 )
 async def create_spending_limit(
     key_id: str,
@@ -42,7 +53,13 @@ async def create_spending_limit(
     return success_response(data.model_dump())
 
 
-@router.get("", response_model=ApiResponse[SpendingLimitListData])
+@router.get(
+    "",
+    response_model=ApiResponse[SpendingLimitListData],
+    summary="查询消费阈值列表",
+    description="查询指定 managed key 下已配置的 spending limits。",
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def list_spending_limits(
     key_id: str,
     auth: Annotated[AuthContext, Depends(get_current_auth_context)],
@@ -56,7 +73,16 @@ async def list_spending_limits(
     return success_response(data.model_dump())
 
 
-@router.patch("/{limit_id}", response_model=ApiResponse[SpendingLimitData])
+@router.patch(
+    "/{limit_id}",
+    response_model=ApiResponse[SpendingLimitData],
+    summary="更新消费阈值",
+    description=(
+        "更新指定 spending limit 的金额或启用状态。更新后会同步 LiteLLM "
+        "budget 配置。"
+    ),
+    responses={**COMMON_ERROR_RESPONSES, **UPSTREAM_ERROR_RESPONSE},
+)
 async def update_spending_limit(
     key_id: str,
     limit_id: int,
@@ -72,7 +98,16 @@ async def update_spending_limit(
     return success_response(data.model_dump())
 
 
-@router.delete("/{limit_id}", response_model=ApiResponse[None])
+@router.delete(
+    "/{limit_id}",
+    response_model=ApiResponse[None],
+    summary="删除消费阈值",
+    description=(
+        "删除指定 spending limit，并同步 LiteLLM budget 配置。删除后如果没有"
+        "启用阈值，会清空 LiteLLM max_budget。"
+    ),
+    responses={**COMMON_ERROR_RESPONSES, **UPSTREAM_ERROR_RESPONSE},
+)
 async def delete_spending_limit(
     key_id: str,
     limit_id: int,

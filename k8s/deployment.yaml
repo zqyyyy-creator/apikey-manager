@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maas-v2-client-api
+  labels:
+    app: maas-v2-client-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: maas-v2-client-api
+  template:
+    metadata:
+      labels:
+        app: maas-v2-client-api
+    spec:
+      containers:
+        - name: maas-v2-client-api
+          image: maas-v2-client-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: maas-v2-client-api-config
+            - secretRef:
+                name: maas-v2-client-api-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi

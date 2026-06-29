@@ -47,6 +47,64 @@ MAAS_V2_API_TIMEOUT=3.0
 
 Use the in-cluster MaaS API service URL for `MAAS_V2_API_URL` in Kubernetes.
 
+## MaaS API Billing Service Environment Variables
+
+Set these in the MaaS API process:
+
+```env
+BILLING_SERVICE_URL=http://localhost:8080
+BILLING_SERVICE_COST_PATH=/api/v1/cost/calculate
+BILLING_SERVICE_TIMEOUT=5.0
+```
+
+`BILLING_SERVICE_URL` is an external service dependency. It is not provided or
+started by this repository. PLAN specifies that MaaS must call an external
+billing service for managed-key CNY cost, but the billing service repository,
+startup command, final API path, schema, and authentication requirements must be
+confirmed separately.
+
+The current MaaS implementation posts this JSON to:
+
+```text
+{BILLING_SERVICE_URL}{BILLING_SERVICE_COST_PATH}
+```
+
+```json
+{
+  "model": "deepseek-v3",
+  "input_tokens": 1000,
+  "output_tokens": 200,
+  "cache_tokens": 500
+}
+```
+
+MaaS accepts either a direct cost response:
+
+```json
+{
+  "data": {
+    "cost": "0.052",
+    "charge_detail": {
+      "input_cost": "0.040",
+      "output_cost": "0.010",
+      "cache_cost": "0.002"
+    }
+  }
+}
+```
+
+or a model rate response:
+
+```json
+{
+  "data": {
+    "input_rate": "0.000001",
+    "output_rate": "0.000002",
+    "cache_rate": "0.0000002"
+  }
+}
+```
+
 ## Gateway Config
 
 Add the MaaS callback to LiteLLM Gateway config:
@@ -114,6 +172,40 @@ LiteLLM success callback
 -> LiteLLM Redis spend counter update
 ```
 
+Before running the Gateway request, verify the external billing service is
+listening from the MaaS API host:
+
+```bash
+curl -i "http://localhost:8080"
+```
+
+Then verify MaaS internal cost lookup directly:
+
+```bash
+curl -i \
+  -H "x-internal-api-key: ${MAAS_V2_INTERNAL_API_KEY}" \
+  "http://127.0.0.1:8000/api/v1/internal/keys/${KEY_HASH_ID}/cost?model=deepseek-v3&input_tokens=1000&output_tokens=200&cache_tokens=500"
+```
+
+Expected result:
+
+```json
+{
+  "code": 0,
+  "data": {
+    "managed": true,
+    "cost": "...",
+    "currency": "CNY",
+    "charge_detail": {
+      "input_cost": "...",
+      "output_cost": "...",
+      "cache_cost": "..."
+    }
+  },
+  "message": "success"
+}
+```
+
 For a non-managed key, expected log:
 
 ```text
@@ -138,6 +230,18 @@ using a LiteLLM virtual key, not only a local master key.
 
 The Gateway could not call MaaS internal cost API. Check service URL, network,
 and internal API key.
+
+MaaS internal cost API returns `500` or logs an external billing service error.
+
+Check that `BILLING_SERVICE_URL` is reachable from the MaaS API process:
+
+```bash
+curl -i "http://localhost:8080"
+```
+
+If the billing service is running but the internal cost API still fails, check
+`BILLING_SERVICE_COST_PATH`, the request schema, response schema, and any
+required billing-service authentication headers.
 
 `maas_custom_logger_skip_missing_cost`
 

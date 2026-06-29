@@ -1,8 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
 
-from fastapi.testclient import TestClient
-
 from app.database import get_db
 from app.dependencies import get_current_auth_context
 from app.litellm_integration.budget_sync import BudgetSyncService
@@ -11,6 +9,7 @@ from app.models.spending_limit import SpendingLimit, SpendingLimitType
 from app.routers.spending_limits import get_spending_limit_service
 from app.schemas.auth import AuthContext
 from app.schemas.spending_limit import SpendingLimitData, SpendingLimitListData
+from tests.asgi_client import asgi_delete, asgi_get, asgi_patch, asgi_post
 
 
 def auth_context() -> AuthContext:
@@ -27,6 +26,10 @@ async def fake_db():
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+async def fake_spending_limit_service() -> "FakeSpendingLimitService":
+    return FakeSpendingLimitService()
 
 
 class FakeSpendingLimitService:
@@ -82,15 +85,15 @@ class FakeSpendingLimitService:
 def install_router_overrides() -> None:
     app.dependency_overrides[get_current_auth_context] = fake_auth_context
     app.dependency_overrides[get_db] = fake_db
-    app.dependency_overrides[get_spending_limit_service] = lambda: FakeSpendingLimitService()
+    app.dependency_overrides[get_spending_limit_service] = fake_spending_limit_service
 
 
 def test_spending_limit_routes_return_spec_shapes() -> None:
     install_router_overrides()
-    client = TestClient(app)
 
     try:
-        create_response = client.post(
+        create_response = asgi_post(
+            app,
             "/api/v1/keys/hash_001/limits",
             json={
                 "limit_type": "daily",
@@ -99,12 +102,13 @@ def test_spending_limit_routes_return_spec_shapes() -> None:
                 "enabled": True,
             },
         )
-        list_response = client.get("/api/v1/keys/hash_001/limits")
-        update_response = client.patch(
+        list_response = asgi_get(app, "/api/v1/keys/hash_001/limits")
+        update_response = asgi_patch(
+            app,
             "/api/v1/keys/hash_001/limits/101",
             json={"amount": "200.00", "enabled": False},
         )
-        delete_response = client.delete("/api/v1/keys/hash_001/limits/101")
+        delete_response = asgi_delete(app, "/api/v1/keys/hash_001/limits/101")
     finally:
         clear_overrides()
 

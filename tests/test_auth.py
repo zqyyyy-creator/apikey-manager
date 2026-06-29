@@ -1,20 +1,31 @@
 import asyncio
 from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
 import httpx
 import pytest
 
-from app.dependencies import get_current_auth_context
+from app.dependencies import get_auth_service, get_current_auth_context
 from app.main import app
 from app.schemas.auth import AuthContext
 from app.services.auth_service import AuthPermissionError, AuthService
 
 
-def test_debug_auth_requires_bearer_token() -> None:
-    client = TestClient(app)
+async def fake_auth_service() -> AuthService:
+    return AuthService()
 
-    response = client.get("/api/v1/debug/auth", headers={"x-user-id": "12345"})
+
+def test_debug_auth_requires_bearer_token() -> None:
+    from tests.asgi_client import asgi_get
+
+    app.dependency_overrides[get_auth_service] = fake_auth_service
+    try:
+        response = asgi_get(
+            app,
+            "/api/v1/debug/auth",
+            headers={"x-user-id": "12345"},
+        )
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 401
     assert response.json() == {
@@ -26,12 +37,17 @@ def test_debug_auth_requires_bearer_token() -> None:
 
 
 def test_debug_auth_missing_x_user_id_uses_unified_error_response() -> None:
-    client = TestClient(app)
+    from tests.asgi_client import asgi_get
 
-    response = client.get(
-        "/api/v1/debug/auth",
-        headers={"Authorization": "Bearer fake-token"},
-    )
+    app.dependency_overrides[get_auth_service] = fake_auth_service
+    try:
+        response = asgi_get(
+            app,
+            "/api/v1/debug/auth",
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 400
     body = response.json()
@@ -51,10 +67,11 @@ def test_debug_auth_can_use_dependency_override() -> None:
         )
 
     app.dependency_overrides[get_current_auth_context] = fake_auth_context
-    client = TestClient(app)
 
     try:
-        response = client.get("/api/v1/debug/auth")
+        from tests.asgi_client import asgi_get
+
+        response = asgi_get(app, "/api/v1/debug/auth")
     finally:
         app.dependency_overrides.clear()
 

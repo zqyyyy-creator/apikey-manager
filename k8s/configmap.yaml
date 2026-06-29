@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: maas-v2-client-api-config
+  labels:
+    app: maas-v2-client-api
+data:
+  ENV_MODE: "test"
+  ENABLE_DOCS: "true"
+
+  CH_DBT_SCHEME: "https"
+  CH_DBT_HOST: "bytehouse.example.com"
+  CH_DBT_PORT: "8123"
+  CH_DBT_DATABASE: "dev_dbt_data"
+  CH_DBT_BILLING_TABLE: "dws_para_statements_changelog"
+
+  LAG_PROXY_URL: "http://lag-proxy:8000"
+  LAG_PROXY_TIMEOUT: "30.0"
+
+  OAUTH2_INTROSPECT_URL: "https://auth.example.com/oauth/introspect"
+  OAUTH2_INTROSPECT_TIMEOUT: "5.0"
+  OAUTH2_TOKEN_CACHE_MAX: "1000"
+  OAUTH2_TOKEN_CACHE_DEFAULT_TTL: "300"
+  DEFAULT_CLIENT_ID: "maas2ss"
+
+  COST_CACHE_MANAGED_TTL: "300"
+  COST_CACHE_RATE_TTL: "600"
+  BILLING_SERVICE_URL: "http://billing-service:8080"
+  BILLING_SERVICE_COST_PATH: "/api/v1/cost/calculate"
+  BILLING_SERVICE_TIMEOUT: "5.0"

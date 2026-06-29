@@ -42,6 +42,11 @@ async def verify_internal_api_key(
     "/keys/{key_hash_id}/cost",
     response_model=ApiResponse[InternalKeyCostData],
     dependencies=[Depends(verify_internal_api_key)],
+    summary="查询 managed key 实际消费金额",
+    description=(
+        "供 LiteLLM CustomLogger 内部调用。接口通过 `x-internal-api-key` "
+        "认证，不走用户 OAuth2。非 managed key 返回 `managed=false`。"
+    ),
 )
 async def get_key_cost(
     key_hash_id: str,

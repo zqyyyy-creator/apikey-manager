@@ -1,12 +1,15 @@
-from fastapi.testclient import TestClient
-
+from app.dependencies import get_auth_service
 from app.main import app
+from app.services.auth_service import AuthService
+from tests.asgi_client import asgi_get
+
+
+async def fake_auth_service() -> AuthService:
+    return AuthService()
 
 
 def test_openapi_includes_key_management_routes() -> None:
-    client = TestClient(app)
-
-    response = client.get("/openapi.json")
+    response = asgi_get(app, "/openapi.json")
 
     assert response.status_code == 200
     paths = response.json()["paths"]
@@ -20,9 +23,11 @@ def test_openapi_includes_key_management_routes() -> None:
 
 
 def test_key_routes_require_authentication() -> None:
-    client = TestClient(app)
-
-    response = client.get("/api/v1/keys", headers={"x-user-id": "12345"})
+    app.dependency_overrides[get_auth_service] = fake_auth_service
+    try:
+        response = asgi_get(app, "/api/v1/keys", headers={"x-user-id": "12345"})
+    finally:
+        app.dependency_overrides.clear()
 
     assert response.status_code == 401
     assert response.json() == {

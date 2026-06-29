@@ -1,8 +1,6 @@
 from datetime import date
 from decimal import Decimal
 
-from fastapi.testclient import TestClient
-
 from app.database import get_db
 from app.dependencies import get_current_auth_context
 from app.exceptions import AppException, ErrorCode
@@ -13,6 +11,7 @@ from app.routers.billing import get_billing_service
 from app.schemas.auth import AuthContext
 from app.schemas.billing import BillingItem, BillingPageData, BillingTotals
 from app.services.billing_service import BillingService
+from tests.asgi_client import asgi_get
 
 
 def auth_context() -> AuthContext:
@@ -34,6 +33,10 @@ async def fake_db():
 
 def clear_overrides() -> None:
     app.dependency_overrides.clear()
+
+
+async def fake_billing_service() -> "FakeBillingService":
+    return FakeBillingService()
 
 
 class FakeBillingService:
@@ -85,6 +88,42 @@ class FakeResourceKeyMapping:
         return {"resource_a": "hash_001", "resource_b": "hash_001"}
 
 
+class FakeClickHouse:
+    database = "dev_dbt_data"
+    billing_table = "dws_para_statements_changelog"
+
+    async def query_json_each_row(self, sql, params=None):  # noqa: ANN001
+        today = date.today()
+        return [
+            {
+                "key_id": "hash_001",
+                "date": today.isoformat(),
+                "model": None,
+                "request_count": 1,
+                "input_tokens": "100",
+                "cache_tokens": "0",
+                "output_tokens": "20",
+                "input_cost": "0.10",
+                "cache_cost": "0",
+                "output_cost": "0.04",
+                "cost": "0.14",
+            },
+            {
+                "key_id": "hash_001",
+                "date": date.fromordinal(today.toordinal() - 1).isoformat(),
+                "model": None,
+                "request_count": 1,
+                "input_tokens": "200",
+                "cache_tokens": "0",
+                "output_tokens": "40",
+                "input_cost": "0.20",
+                "cache_cost": "0",
+                "output_cost": "0.08",
+                "cost": "0.28",
+            },
+        ]
+
+
 class FakeDb:
     def __init__(self) -> None:
         self.commits = 0
@@ -96,15 +135,14 @@ class FakeDb:
 def install_router_overrides() -> None:
     app.dependency_overrides[get_current_auth_context] = fake_auth_context
     app.dependency_overrides[get_db] = fake_db
-    app.dependency_overrides[get_billing_service] = lambda: FakeBillingService()
+    app.dependency_overrides[get_billing_service] = fake_billing_service
 
 
 def test_key_billing_route_returns_usage_breakdown() -> None:
     install_router_overrides()
-    client = TestClient(app)
 
     try:
-        response = client.get("/api/v1/keys/hash_001/billing?group_by=date_model")
+        response = asgi_get(app, "/api/v1/keys/hash_001/billing?group_by=date_model")
     finally:
         clear_overrides()
 
@@ -242,6 +280,20 @@ def test_billing_service_accepts_resource_uuid_mapping_layer() -> None:
     )
 
     assert service.resource_key_mapping is not None
+
+
+def test_key_usage_summary_returns_today_and_seven_day_costs() -> None:
+    import asyncio
+
+    service = BillingService(
+        clickhouse_client=FakeClickHouse(),
+        resource_key_mapping=FakeResourceKeyMapping(),
+    )
+
+    summary = asyncio.run(service.get_key_usage_summary(auth_context(), "hash_001"))
+
+    assert summary.today_cost == Decimal("0.14")
+    assert summary.total_cost_7d == Decimal("0.42")
 
 
 def test_billing_charge_type_conditions_support_spec_and_real_bytehouse_values() -> None:

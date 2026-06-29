@@ -18,6 +18,11 @@ from app.schemas.managed_key import (
     UnblockKeyData,
     UnblockKeyRequest,
 )
+from app.schemas.openapi import (
+    COMMON_ERROR_RESPONSES,
+    CONFLICT_RESPONSE,
+    UPSTREAM_ERROR_RESPONSE,
+)
 from app.services.managed_key_service import ManagedKeyService
 
 
@@ -32,6 +37,13 @@ def get_managed_key_service() -> ManagedKeyService:
     "",
     response_model=ApiResponse[CreateKeyData],
     status_code=status.HTTP_201_CREATED,
+    summary="创建托管 Key",
+    description=(
+        "创建 MaaS 托管的 LiteLLM key。请求必须携带 Bearer token 和 "
+        "`x-user-id`，服务端根据 user_id 生成 team_id。raw key 只会在"
+        "本接口响应中返回一次，不会落库存储。"
+    ),
+    responses={**COMMON_ERROR_RESPONSES, **UPSTREAM_ERROR_RESPONSE},
 )
 async def create_key(
     request: CreateKeyRequest,
@@ -43,7 +55,16 @@ async def create_key(
     return success_response(data.model_dump())
 
 
-@router.get("", response_model=ApiResponse[PageData[ManagedKeyListItem]])
+@router.get(
+    "",
+    response_model=ApiResponse[PageData[ManagedKeyListItem]],
+    summary="查询托管 Key 列表",
+    description=(
+        "分页查询当前 `x-user-id` 所属 team 下的 managed keys。支持按状态和"
+        "名称过滤，不返回 raw key。"
+    ),
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def list_keys(
     auth: Annotated[AuthContext, Depends(get_current_auth_context)],
     db: Annotated[AsyncSession, Depends(get_db)],
@@ -67,7 +88,16 @@ async def list_keys(
     return success_response(data.model_dump())
 
 
-@router.get("/{key_id}", response_model=ApiResponse[ManagedKeyDetail])
+@router.get(
+    "/{key_id}",
+    response_model=ApiResponse[ManagedKeyDetail],
+    summary="查询托管 Key 详情",
+    description=(
+        "查询单个 managed key 的详情、spending limits 和 usage_summary。"
+        "`key_id` 为 LiteLLM key hash id，不是 raw key。"
+    ),
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def get_key(
     key_id: str,
     auth: Annotated[AuthContext, Depends(get_current_auth_context)],
@@ -78,7 +108,16 @@ async def get_key(
     return success_response(data.model_dump())
 
 
-@router.patch("/{key_id}/revoke", response_model=ApiResponse[RevokeKeyData])
+@router.patch(
+    "/{key_id}/revoke",
+    response_model=ApiResponse[RevokeKeyData],
+    summary="吊销托管 Key",
+    description=(
+        "将 managed key 标记为 revoked，并通过 lag-proxy 调用 LiteLLM block "
+        "能力。已吊销 key 再次吊销会返回冲突错误。"
+    ),
+    responses={**COMMON_ERROR_RESPONSES, **CONFLICT_RESPONSE, **UPSTREAM_ERROR_RESPONSE},
+)
 async def revoke_key(
     key_id: str,
     request: Annotated[
@@ -93,7 +132,16 @@ async def revoke_key(
     return success_response(data.model_dump())
 
 
-@router.patch("/{key_id}/unblock", response_model=ApiResponse[UnblockKeyData])
+@router.patch(
+    "/{key_id}/unblock",
+    response_model=ApiResponse[UnblockKeyData],
+    summary="解封托管 Key",
+    description=(
+        "将 blocked key 恢复为 active。按 PLAN 要求，解封前会调用 LiteLLM "
+        "`reset_spend`，避免旧 spend 立即再次触发预算限制。"
+    ),
+    responses={**COMMON_ERROR_RESPONSES, **CONFLICT_RESPONSE, **UPSTREAM_ERROR_RESPONSE},
+)
 async def unblock_key(
     key_id: str,
     request: Annotated[

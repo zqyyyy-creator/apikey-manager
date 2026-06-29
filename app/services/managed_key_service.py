@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import status
 from sqlalchemy import func, select
@@ -20,12 +20,23 @@ from app.schemas.managed_key import (
     SpendingLimitItem,
     UnblockKeyData,
     UnblockKeyRequest,
+    UsageSummary,
 )
+from app.services.billing_service import BillingService
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class ManagedKeyService:
-    def __init__(self, litellm_client: LiteLLMClient | None = None) -> None:
+    def __init__(
+        self,
+        litellm_client: LiteLLMClient | None = None,
+        billing_service: BillingService | None = None,
+    ) -> None:
         self.litellm_client = litellm_client or LiteLLMClient()
+        self.billing_service = billing_service or BillingService()
 
     async def create_key(
         self,
@@ -113,7 +124,11 @@ class ManagedKeyService:
         key_id: str,
     ) -> ManagedKeyDetail:
         managed_key = await self._get_owned_key(db, auth, key_id, with_limits=True)
-        return self._to_detail(managed_key)
+        usage_summary = await self.billing_service.get_key_usage_summary(
+            auth,
+            managed_key.key_hash_id,
+        )
+        return self._to_detail(managed_key, usage_summary=usage_summary)
 
     async def revoke_key(
         self,
@@ -146,7 +161,7 @@ class ManagedKeyService:
             ) from exc
 
         managed_key.status = ManagedKeyStatus.REVOKED
-        managed_key.revoked_at = datetime.utcnow()
+        managed_key.revoked_at = _utcnow()
         await db.commit()
         await db.refresh(managed_key)
 
@@ -180,16 +195,15 @@ class ManagedKeyService:
             )
 
         try:
-            await self.litellm_client.unblock_key(
+            await self.litellm_client.reset_key_spend(
                 key=managed_key.key_hash_id,
                 user_id=auth.user_id,
                 access_token=auth.access_token,
-                reason=request.reason,
             )
         except LagProxyError as exc:
             raise AppException(
                 code=ErrorCode.INTERNAL_ERROR,
-                message="Failed to unblock key",
+                message="Failed to reset key spend",
                 status_code=status.HTTP_502_BAD_GATEWAY,
             ) from exc
 
@@ -243,7 +257,12 @@ class ManagedKeyService:
             revoked_at=managed_key.revoked_at,
         )
 
-    def _to_detail(self, managed_key: ManagedKey) -> ManagedKeyDetail:
+    def _to_detail(
+        self,
+        managed_key: ManagedKey,
+        *,
+        usage_summary: UsageSummary | None = None,
+    ) -> ManagedKeyDetail:
         return ManagedKeyDetail(
             **self._to_list_item(managed_key).model_dump(),
             spending_limits=[
@@ -256,5 +275,5 @@ class ManagedKeyService:
                 )
                 for limit in managed_key.spending_limits
             ],
-            usage_summary=None,
+            usage_summary=usage_summary,
         )

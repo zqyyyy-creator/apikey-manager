@@ -14,6 +14,7 @@ from app.schemas.billing import (
     BillingSummaryPageData,
 )
 from app.schemas.common import ApiResponse, success_response
+from app.schemas.openapi import COMMON_ERROR_RESPONSES
 from app.services.billing_service import BillingService
 
 
@@ -24,7 +25,17 @@ def get_billing_service() -> BillingService:
     return BillingService()
 
 
-@router.get("/keys/{key_id}/billing", response_model=ApiResponse[BillingPageData])
+@router.get(
+    "/keys/{key_id}/billing",
+    response_model=ApiResponse[BillingPageData],
+    summary="查询单 Key 账单",
+    description=(
+        "查询指定 managed key 的 ClickHouse/ByteHouse 账单，最大查询范围 7 天。"
+        "当前表口径为 `dws_para_statements_changelog`，token 数量来自 "
+        "`resource_used_count`，金额来自 `used_value` 和 `real_price`。"
+    ),
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def get_key_billing(
     key_id: str,
     auth: Annotated[AuthContext, Depends(get_current_auth_context)],
@@ -49,7 +60,16 @@ async def get_key_billing(
     return success_response(data.model_dump())
 
 
-@router.get("/billing/summary", response_model=ApiResponse[BillingSummaryPageData])
+@router.get(
+    "/billing/summary",
+    response_model=ApiResponse[BillingSummaryPageData],
+    summary="查询 Team 汇总账单",
+    description=(
+        "查询当前 `x-user-id` 所属 team 下所有 managed keys 的账单汇总，支持"
+        "按 key、key_date、key_model 聚合。最大查询范围 7 天。"
+    ),
+    responses=COMMON_ERROR_RESPONSES,
+)
 async def get_billing_summary(
     auth: Annotated[AuthContext, Depends(get_current_auth_context)],
     db: Annotated[AsyncSession, Depends(get_db)],

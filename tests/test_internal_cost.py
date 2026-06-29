@@ -3,6 +3,7 @@ from decimal import Decimal
 import pytest
 
 from app.litellm_integration.cost_calculator import CostCalculator
+from app.schemas.internal import ChargeDetail
 from app.services.internal_cost_service import InternalCostService
 
 
@@ -22,6 +23,22 @@ class FakeDb:
     async def execute(self, statement):  # noqa: ANN001, ANN201
         self.execute_count += 1
         return FakeScalarResult("hash_001" if self.managed else None)
+
+
+class FakeCostCalculator:
+    async def calculate(self, **kwargs):  # noqa: ANN003, ANN201
+        return type(
+            "CalculatedCost",
+            (),
+            {
+                "total": Decimal("0.0015000"),
+                "charge_detail": ChargeDetail(
+                    input_cost=Decimal("0.001000"),
+                    output_cost=Decimal("0.000400"),
+                    cache_cost=Decimal("0.0001000"),
+                ),
+            },
+        )()
 
 
 @pytest.mark.anyio
@@ -44,7 +61,7 @@ async def test_internal_cost_returns_not_managed_for_unknown_key() -> None:
 
 @pytest.mark.anyio
 async def test_internal_cost_calculates_cny_cost_for_managed_key() -> None:
-    service = InternalCostService(cost_calculator=CostCalculator())
+    service = InternalCostService(cost_calculator=FakeCostCalculator())
 
     data = await service.get_key_cost(
         FakeDb(managed=True),
@@ -67,7 +84,7 @@ async def test_internal_cost_calculates_cny_cost_for_managed_key() -> None:
 @pytest.mark.anyio
 async def test_internal_cost_caches_managed_key_lookup() -> None:
     db = FakeDb(managed=True)
-    service = InternalCostService(cost_calculator=CostCalculator())
+    service = InternalCostService(cost_calculator=FakeCostCalculator())
 
     await service.get_key_cost(
         db,

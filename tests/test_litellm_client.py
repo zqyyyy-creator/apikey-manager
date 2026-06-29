@@ -125,6 +125,38 @@ def test_block_and_unblock_key_call_expected_paths() -> None:
     assert seen_paths == ["/key/block", "/key/unblock"]
 
 
+def test_reset_key_spend_calls_expected_path_and_payload() -> None:
+    captured_request = None
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_request
+        captured_request = request
+        return httpx.Response(200, json={"ok": True}, request=request)
+
+    async def run_test() -> None:
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = LiteLLMClient(
+                base_url="http://lag-proxy",
+                http_client=http_client,
+            )
+
+            await client.reset_key_spend(
+                key="hash_001",
+                user_id="12345",
+                access_token="token_123",
+            )
+
+    asyncio.run(run_test())
+
+    assert captured_request is not None
+    assert captured_request.method == "POST"
+    assert captured_request.url.path == "/key/hash_001/reset_spend"
+    assert captured_request.headers["x-user-id"] == "12345"
+    assert captured_request.headers["authorization"] == "Bearer token_123"
+    assert json.loads(captured_request.content) == {"reset_to": "0"}
+
+
 def test_update_key_can_clear_budget_and_send_budget_limits() -> None:
     captured_payload = None
 

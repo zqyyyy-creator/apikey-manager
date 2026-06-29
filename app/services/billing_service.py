@@ -22,10 +22,15 @@ from app.schemas.billing import (
     BillingSummaryPageData,
     BillingTotals,
 )
+from app.schemas.managed_key import UsageSummary
 from app.services.resource_key_mapping_service import ResourceKeyMappingService
 
 
 logger = structlog.get_logger()
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class BillingService:
@@ -134,6 +139,35 @@ class BillingService:
             page=max(page, 1),
             page_size=min(max(page_size, 1), 100),
             summary=self._summarize_summary_items(items),
+        )
+
+    async def get_key_usage_summary(
+        self,
+        auth: AuthContext,
+        key_id: str,
+    ) -> UsageSummary:
+        today = date.today()
+        start_date = today - timedelta(days=6)
+        resource_uuids = await self.resource_key_mapping.get_resource_uuids_for_key(
+            key_id
+        )
+        rows = await self._query_key_billing_rows(
+            auth=auth,
+            key_id=key_id,
+            resource_uuids=resource_uuids,
+            start_date=start_date,
+            end_date=today,
+            group_by="date",
+        )
+        items = [self._to_billing_item(row) for row in rows]
+        today_cost = sum(
+            (item.cost for item in items if item.date == today),
+            Decimal("0"),
+        )
+        total_cost_7d = sum((item.cost for item in items), Decimal("0"))
+        return UsageSummary(
+            today_cost=today_cost,
+            total_cost_7d=total_cost_7d,
         )
 
     async def _query_key_billing_rows(
@@ -361,7 +395,7 @@ HAVING _action != 'DELETE'
             ):
                 managed_key.status = ManagedKeyStatus.BLOCKED
                 managed_key.blocked_reason = "Daily spending limit exceeded"
-                managed_key.blocked_at = datetime.utcnow()
+                managed_key.blocked_at = _utcnow()
                 await db.commit()
                 return
             if limit.limit_type == SpendingLimitType.WEEKLY and any(
@@ -369,7 +403,7 @@ HAVING _action != 'DELETE'
             ):
                 managed_key.status = ManagedKeyStatus.BLOCKED
                 managed_key.blocked_reason = "Weekly spending limit exceeded"
-                managed_key.blocked_at = datetime.utcnow()
+                managed_key.blocked_at = _utcnow()
                 await db.commit()
                 return
             if limit.limit_type == SpendingLimitType.MONTHLY and any(
@@ -377,13 +411,13 @@ HAVING _action != 'DELETE'
             ):
                 managed_key.status = ManagedKeyStatus.BLOCKED
                 managed_key.blocked_reason = "Monthly spending limit exceeded"
-                managed_key.blocked_at = datetime.utcnow()
+                managed_key.blocked_at = _utcnow()
                 await db.commit()
                 return
             if limit.limit_type == SpendingLimitType.TOTAL and summary.total_cost >= limit.amount:
                 managed_key.status = ManagedKeyStatus.BLOCKED
                 managed_key.blocked_reason = "Total spending limit exceeded"
-                managed_key.blocked_at = datetime.utcnow()
+                managed_key.blocked_at = _utcnow()
                 await db.commit()
                 return
 
