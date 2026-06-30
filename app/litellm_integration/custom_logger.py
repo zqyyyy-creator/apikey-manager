@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -19,6 +20,9 @@ class MaasCustomLogger(CustomLogger):
         maas_api_url: str | None = None,
         internal_api_key: str | None = None,
         timeout: float | None = None,
+        budget_sync_enabled: bool | None = None,
+        budget_sync_interval_seconds: float | None = None,
+        realtime_cost_enabled: bool | None = None,
     ) -> None:
         super().__init__()
         self.maas_api_url = (
@@ -29,6 +33,23 @@ class MaasCustomLogger(CustomLogger):
             os.environ.get("INTERNAL_API_KEY", ""),
         )
         self.timeout = timeout or float(os.environ.get("MAAS_V2_API_TIMEOUT", "3.0"))
+        self.budget_sync_enabled = (
+            budget_sync_enabled
+            if budget_sync_enabled is not None
+            else os.environ.get("MAAS_V2_BUDGET_SYNC_ENABLED", "false").lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self.budget_sync_interval_seconds = budget_sync_interval_seconds or float(
+            os.environ.get("MAAS_V2_BUDGET_SYNC_INTERVAL_SECONDS", "3600")
+        )
+        self.realtime_cost_enabled = (
+            realtime_cost_enabled
+            if realtime_cost_enabled is not None
+            else os.environ.get("MAAS_V2_REALTIME_COST_ENABLED", "false").lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self._budget_sync_task: asyncio.Task | None = None
+        self._ensure_budget_sync_task()
 
     async def async_log_success_event(
         self,
@@ -37,6 +58,8 @@ class MaasCustomLogger(CustomLogger):
         start_time: Any,
         end_time: Any,
     ) -> None:
+        self._ensure_budget_sync_task()
+
         if not self.maas_api_url or not self.internal_api_key:
             logger.warning("maas_custom_logger_not_configured")
             return
@@ -47,6 +70,17 @@ class MaasCustomLogger(CustomLogger):
             return
 
         model = self._extract_model(kwargs, response_obj)
+        if not self.realtime_cost_enabled:
+            await self._skip_realtime_cost_for_managed_key(
+                key_hash_id=key_hash_id,
+                model=model,
+                kwargs=kwargs,
+                response_obj=response_obj,
+                start_time=start_time,
+                end_time=end_time,
+            )
+            return
+
         usage = self._extract_usage(response_obj)
 
         try:
@@ -112,6 +146,66 @@ class MaasCustomLogger(CustomLogger):
             },
         )
 
+    async def _skip_realtime_cost_for_managed_key(
+        self,
+        *,
+        key_hash_id: str,
+        model: str,
+        kwargs: dict[str, Any],
+        response_obj: Any,
+        start_time: Any,
+        end_time: Any,
+    ) -> None:
+        try:
+            managed_data = await self._fetch_managed_status(key_hash_id=key_hash_id)
+        except Exception:
+            logger.exception(
+                "maas_custom_logger_managed_lookup_failed",
+                extra={"key_hash_id": key_hash_id, "model": model},
+            )
+            return
+
+        if not managed_data.get("managed"):
+            logger.warning(
+                "maas_custom_logger_non_managed_key",
+                extra={"key_hash_id": key_hash_id, "model": model},
+            )
+            return
+
+        spend_adjustment = self._calculate_spend_adjustment(kwargs, {"cost": 0})
+        if spend_adjustment is None:
+            return
+
+        try:
+            await self._apply_spend_adjustment(
+                kwargs=kwargs,
+                response_obj=response_obj,
+                start_time=start_time,
+                end_time=end_time,
+                response_cost=spend_adjustment["delta_cost"],
+            )
+        except Exception:
+            logger.exception(
+                "maas_custom_logger_realtime_cost_neutralize_failed",
+                extra={
+                    "key_hash_id": key_hash_id,
+                    "model": model,
+                    "default_cost": spend_adjustment["default_cost"],
+                    "delta_cost": spend_adjustment["delta_cost"],
+                },
+            )
+            return
+
+        logger.warning(
+            "maas_custom_logger_realtime_cost_skipped_for_managed_key",
+            extra={
+                "key_hash_id": key_hash_id,
+                "model": model,
+                "default_cost": spend_adjustment["default_cost"],
+                "delta_cost": spend_adjustment["delta_cost"],
+            },
+        )
+
     async def async_log_failure_event(
         self,
         kwargs: dict[str, Any],
@@ -124,6 +218,160 @@ class MaasCustomLogger(CustomLogger):
             "maas_custom_logger_failure_observed",
             extra={"key_hash_id": key_hash_id, "model": kwargs.get("model")},
         )
+
+    def _ensure_budget_sync_task(self) -> None:
+        if not self.budget_sync_enabled:
+            return
+        if not self.maas_api_url or not self.internal_api_key:
+            return
+        if self._budget_sync_task is not None and not self._budget_sync_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._budget_sync_task = loop.create_task(self._budget_sync_loop())
+
+    async def _budget_sync_loop(self) -> None:
+        while True:
+            try:
+                await self._run_budget_sync_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("maas_budget_sync_failed")
+            await asyncio.sleep(self.budget_sync_interval_seconds)
+
+    async def _run_budget_sync_once(self) -> None:
+        sync_data = await self._fetch_budget_sync_keys()
+        items = sync_data.get("items", [])
+        if not isinstance(items, list):
+            raise ValueError("MaaS budget sync API returned invalid items")
+
+        synced = 0
+        for item in items:
+            if isinstance(item, dict) and item.get("key_hash_id"):
+                await self._apply_key_budget_sync(item)
+                synced += 1
+
+        logger.warning("maas_budget_sync_completed", extra={"synced_keys": synced})
+
+    async def _fetch_budget_sync_keys(self) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.maas_api_url}/api/v1/internal/budget-sync/keys",
+                headers={"x-internal-api-key": self.internal_api_key},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise ValueError("MaaS budget sync API returned unexpected response")
+        return data
+
+    async def _apply_key_budget_sync(self, item: dict[str, Any]) -> None:
+        key_hash_id = str(item["key_hash_id"])
+        spend = float(item.get("spend") or 0)
+        budget_limits = item.get("budget_limits")
+        normalized_budget_limits = self._budget_limits_for_litellm(budget_limits)
+
+        from litellm.proxy.proxy_server import (
+            prisma_client,
+            spend_counter_cache,
+            user_api_key_cache,
+        )
+
+        db_data = {
+            "spend": spend,
+            "max_budget": self._optional_float(item.get("max_budget")),
+            "budget_duration": item.get("budget_duration"),
+            "budget_limits": (
+                json.dumps(normalized_budget_limits)
+                if normalized_budget_limits is not None
+                else None
+            ),
+            "blocked": bool(item.get("blocked", False)),
+        }
+        updated_key = None
+        if prisma_client is not None:
+            updated_key = await prisma_client.db.litellm_verificationtoken.update(
+                where={"token": key_hash_id},
+                data=db_data,
+            )
+
+        cache_value = updated_key or await user_api_key_cache.async_get_cache(
+            key=key_hash_id
+        )
+        if cache_value is not None:
+            self._set_value(cache_value, "spend", spend)
+            self._set_value(cache_value, "max_budget", db_data["max_budget"])
+            self._set_value(cache_value, "budget_duration", db_data["budget_duration"])
+            self._set_value(cache_value, "budget_limits", normalized_budget_limits)
+            self._set_value(cache_value, "blocked", db_data["blocked"])
+            await user_api_key_cache.async_set_cache(key=key_hash_id, value=cache_value)
+
+        await self._set_spend_counter(
+            spend_counter_cache,
+            f"spend:key:{key_hash_id}",
+            spend,
+        )
+        if isinstance(budget_limits, list):
+            for window in budget_limits:
+                if not isinstance(window, dict):
+                    continue
+                duration = window.get("budget_duration")
+                if not duration:
+                    continue
+                await self._set_spend_counter(
+                    spend_counter_cache,
+                    f"spend:key:{key_hash_id}:window:{duration}",
+                    float(window.get("spend") or 0),
+                )
+
+    async def _set_spend_counter(
+        self,
+        spend_counter_cache: Any,
+        counter_key: str,
+        spend: float,
+    ) -> None:
+        spend_counter_cache.in_memory_cache.set_cache(key=counter_key, value=spend)
+        if spend_counter_cache.redis_cache is not None:
+            await spend_counter_cache.redis_cache.async_set_cache(
+                key=counter_key,
+                value=spend,
+            )
+
+    def _budget_limits_for_litellm(
+        self,
+        budget_limits: Any,
+    ) -> list[dict[str, Any]] | None:
+        if not isinstance(budget_limits, list):
+            return None
+
+        normalized = []
+        for window in budget_limits:
+            if not isinstance(window, dict):
+                continue
+            duration = window.get("budget_duration")
+            max_budget = self._optional_float(window.get("max_budget"))
+            if not duration or max_budget is None:
+                continue
+            normalized.append(
+                {
+                    "budget_duration": str(duration),
+                    "max_budget": max_budget,
+                }
+            )
+        return normalized or None
+
+    def _optional_float(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     async def _fetch_cost(
         self,
@@ -151,6 +399,24 @@ class MaasCustomLogger(CustomLogger):
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, dict):
             raise ValueError("MaaS cost API returned unexpected response")
+        return data
+
+    async def _fetch_managed_status(
+        self,
+        *,
+        key_hash_id: str,
+    ) -> dict[str, Any]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(
+                f"{self.maas_api_url}/api/v1/internal/keys/{key_hash_id}/managed",
+                headers={"x-internal-api-key": self.internal_api_key},
+            )
+            response.raise_for_status()
+            payload = response.json()
+
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise ValueError("MaaS managed API returned unexpected response")
         return data
 
     def _calculate_spend_adjustment(

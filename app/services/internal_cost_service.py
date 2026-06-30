@@ -52,7 +52,7 @@ class InternalCostService:
         output_tokens: int,
         cache_tokens: int,
     ) -> InternalKeyCostData:
-        if not await self._is_managed_key(db, key_hash_id):
+        if not await self.is_managed_key(db, key_hash_id):
             return InternalKeyCostData(managed=False)
 
         calculated_cost = await self.cost_calculator.calculate(
@@ -68,7 +68,7 @@ class InternalCostService:
             charge_detail=calculated_cost.charge_detail,
         )
 
-    async def _is_managed_key(self, db: AsyncSession, key_hash_id: str) -> bool:
+    async def is_managed_key(self, db: AsyncSession, key_hash_id: str) -> bool:
         cache_key = f"managed:{key_hash_id}"
         cached = self._managed_cache.get(cache_key)
         if isinstance(cached, bool):
@@ -80,4 +80,3 @@ class InternalCostService:
         is_managed = result.scalar_one_or_none() is not None
         self._managed_cache.set(cache_key, is_managed)
         return is_managed
-

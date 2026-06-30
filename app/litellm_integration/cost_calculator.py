@@ -116,6 +116,8 @@ class CostCalculator:
             "output_tokens": output_tokens,
             "cache_tokens": cache_tokens,
         }
+        if not self.billing_service_url:
+            raise CostCalculatorError("external billing service URL is not configured")
         url = f"{self.billing_service_url}/{self.cost_path.lstrip('/')}"
         try:
             async with httpx.AsyncClient(

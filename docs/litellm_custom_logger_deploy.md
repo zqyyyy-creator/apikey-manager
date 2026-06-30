@@ -5,12 +5,17 @@ This document describes how to deploy the MaaS CustomLogger into
 
 ## Scope
 
-The CustomLogger is required by PLAN Phase 6:
+The CustomLogger supports two deployment modes. The current default mode is the
+CK-driven budget sync strategy:
 
-- Managed MaaS keys use MaaS CNY cost instead of LiteLLM default pricing.
+- Managed MaaS keys neutralize LiteLLM default realtime cost.
+- CK/ByteHouse budget sync writes the authoritative spend into LiteLLM DB and
+  Redis counters.
 - Non-managed keys are skipped and continue using LiteLLM default spend logic.
-- The managed-key cost delta is written to LiteLLM DB and Redis spend counters.
 - LiteLLM budget enforcement can continue checking `spend >= max_budget`.
+
+Optional realtime cost replacement can be enabled with
+`MAAS_V2_REALTIME_COST_ENABLED=true`.
 
 ## Files
 
@@ -43,13 +48,24 @@ Set these in the LiteLLM Gateway process:
 MAAS_V2_API_URL=http://maas-v2-client-api:8000
 MAAS_V2_INTERNAL_API_KEY=<same value as maas-v2-client-api INTERNAL_API_KEY>
 MAAS_V2_API_TIMEOUT=3.0
+MAAS_V2_REALTIME_COST_ENABLED=false
+MAAS_V2_BUDGET_SYNC_ENABLED=true
+MAAS_V2_BUDGET_SYNC_INTERVAL_SECONDS=3600
 ```
 
 Use the in-cluster MaaS API service URL for `MAAS_V2_API_URL` in Kubernetes.
+The budget sync job runs inside the Gateway callback process. It starts during
+callback initialization when LiteLLM loads the module inside a running event
+loop, and falls back to starting on the first successful request if the callback
+was imported earlier. It calls MaaS internal API, reads CK-derived spend, then
+updates LiteLLM key spend, `max_budget`, `budget_duration`, `budget_limits`,
+and Redis spend counters.
 
-## MaaS API Billing Service Environment Variables
+## Optional MaaS API Billing Service Environment Variables
 
-Set these in the MaaS API process:
+The default CK sync strategy does not require billing service configuration.
+Set these in the MaaS API process only when
+`MAAS_V2_REALTIME_COST_ENABLED=true`:
 
 ```env
 BILLING_SERVICE_URL=http://localhost:8080
@@ -57,11 +73,8 @@ BILLING_SERVICE_COST_PATH=/api/v1/cost/calculate
 BILLING_SERVICE_TIMEOUT=5.0
 ```
 
-`BILLING_SERVICE_URL` is an external service dependency. It is not provided or
-started by this repository. PLAN specifies that MaaS must call an external
-billing service for managed-key CNY cost, but the billing service repository,
-startup command, final API path, schema, and authentication requirements must be
-confirmed separately.
+`BILLING_SERVICE_URL` is an optional external service dependency. It is not
+provided or started by this repository.
 
 The current MaaS implementation posts this JSON to:
 
@@ -153,7 +166,8 @@ through the Gateway.
 Expected Gateway log:
 
 ```text
-maas_custom_logger_managed_cost_synced
+maas_custom_logger_realtime_cost_skipped_for_managed_key
+maas_budget_sync_completed
 ```
 
 For local callback-to-MaaS connectivity checks with the mock model, the request
@@ -165,15 +179,24 @@ This means:
 
 ```text
 LiteLLM success callback
--> MaaS internal cost API
+-> MaaS internal managed API
 -> managed=true
--> delta = maas_cost - litellm_default_cost
--> LiteLLM DB spend update
--> LiteLLM Redis spend counter update
+-> delta = 0 - litellm_default_cost
+-> neutralize LiteLLM default realtime spend
 ```
 
-Before running the Gateway request, verify the external billing service is
-listening from the MaaS API host:
+Budget sync flow:
+
+```text
+LiteLLM Gateway background callback task, every 3600s
+-> MaaS internal budget-sync API
+-> ClickHouse dws_para_statements_changelog spend aggregation
+-> LiteLLM_VerificationToken spend / budget fields update
+-> Redis spend:key:{token} and spend:key:{token}:window:{duration} update
+```
+
+For optional realtime cost replacement only, verify the external billing service
+is listening from the MaaS API host:
 
 ```bash
 curl -i "http://localhost:8080"
@@ -228,8 +251,8 @@ using a LiteLLM virtual key, not only a local master key.
 
 `maas_custom_logger_cost_lookup_failed`
 
-The Gateway could not call MaaS internal cost API. Check service URL, network,
-and internal API key.
+Only applies when `MAAS_V2_REALTIME_COST_ENABLED=true`. The Gateway could not
+call MaaS internal cost API. Check service URL, network, and internal API key.
 
 MaaS internal cost API returns `500` or logs an external billing service error.
 
@@ -242,6 +265,11 @@ curl -i "http://localhost:8080"
 If the billing service is running but the internal cost API still fails, check
 `BILLING_SERVICE_COST_PATH`, the request schema, response schema, and any
 required billing-service authentication headers.
+
+`maas_custom_logger_managed_lookup_failed`
+
+The Gateway could not call MaaS internal managed API. Check `MAAS_V2_API_URL`,
+network connectivity, and `MAAS_V2_INTERNAL_API_KEY`.
 
 `maas_custom_logger_skip_missing_cost`
 

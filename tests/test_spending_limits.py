@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from decimal import Decimal
 
@@ -5,10 +6,12 @@ from app.database import get_db
 from app.dependencies import get_current_auth_context
 from app.litellm_integration.budget_sync import BudgetSyncService
 from app.main import app
+from app.models.managed_key import ManagedKey, ManagedKeyStatus
 from app.models.spending_limit import SpendingLimit, SpendingLimitType
 from app.routers.spending_limits import get_spending_limit_service
 from app.schemas.auth import AuthContext
 from app.schemas.spending_limit import SpendingLimitData, SpendingLimitListData
+from app.services.budget_spend_sync_service import BudgetSpendSyncService
 from tests.asgi_client import asgi_delete, asgi_get, asgi_patch, asgi_post
 
 
@@ -177,13 +180,13 @@ def test_budget_sync_maps_multiple_periods_to_budget_limits() -> None:
             "key": "hash_001",
             "user_id": "12345",
             "access_token": "token_123",
-            "clear_max_budget": True,
+            "max_budget": Decimal("1000.00"),
+            "clear_max_budget": False,
             "clear_budget_duration": True,
             "budget_limits": [
                 {"budget_duration": "1d", "max_budget": "100.00"},
                 {"budget_duration": "1w", "max_budget": "500.00"},
                 {"budget_duration": "1mo", "max_budget": "1500.00"},
-                {"budget_duration": None, "max_budget": "1000.00"},
             ],
         }
     ]
@@ -317,3 +320,33 @@ def test_budget_sync_clears_budget_when_no_limits_enabled() -> None:
             "clear_budget_duration": True,
         }
     ]
+
+
+def test_budget_spend_sync_uses_key_creation_date_for_total_spend() -> None:
+    seen_ranges = []
+
+    class FakeBudgetSpendSyncService(BudgetSpendSyncService):
+        async def _sum_cost_for_range(self, **kwargs):  # noqa: ANN003, ANN201
+            seen_ranges.append((kwargs["start_date"], kwargs["end_date"]))
+            return Decimal("0")
+
+    managed_key = ManagedKey(
+        key_hash_id="hash_001",
+        team_id="AI_TEST_12345",
+        key_alias="sk-...abcd",
+        status=ManagedKeyStatus.ACTIVE,
+        created_at=datetime(2026, 6, 25, 10, 0, 0),
+    )
+    total_limit = SpendingLimit(
+        key_hash_id="hash_001",
+        limit_type=SpendingLimitType.TOTAL,
+        amount=Decimal("1000.00"),
+        currency="CNY",
+        enabled=True,
+    )
+
+    service = FakeBudgetSpendSyncService()
+    data = asyncio.run(service._build_key_sync_data(managed_key, [total_limit]))
+
+    assert data.key_hash_id == "hash_001"
+    assert seen_ranges[0][0].isoformat() == "2026-06-25"

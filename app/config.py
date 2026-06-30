@@ -26,11 +26,12 @@ class Settings(BaseSettings):
     default_client_id: str = "maas2ss"
 
     enable_docs: bool = True
+    enable_debug_routes: bool | None = None
 
     internal_api_key: str
     cost_cache_managed_ttl: int = 300
     cost_cache_rate_ttl: int = 600
-    billing_service_url: str
+    billing_service_url: str = ""
     billing_service_cost_path: str = "/api/v1/cost/calculate"
     billing_service_timeout: float = 5.0
 
@@ -43,6 +44,12 @@ class Settings(BaseSettings):
     @property
     def team_id_prefix(self) -> str:
         return "AI_PRD" if self.env_mode == "prod" else "AI_TEST"
+
+    @property
+    def debug_routes_enabled(self) -> bool:
+        if self.enable_debug_routes is not None:
+            return self.enable_debug_routes
+        return self.env_mode != "prod"
 
     @property
     def clickhouse_url(self) -> str:

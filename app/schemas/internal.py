@@ -25,6 +25,10 @@ class InternalKeyCostData(BaseModel):
     currency: str | None = None
     charge_detail: ChargeDetail | None = None
 
+
+class InternalKeyManagedData(BaseModel):
+    managed: bool
+
     model_config = {
         "json_schema_extra": {
             "examples": [
@@ -47,3 +51,22 @@ class InternalKeyCostData(BaseModel):
             ]
         }
     }
+
+
+class BudgetSyncWindowData(BaseModel):
+    budget_duration: str
+    max_budget: Decimal
+    spend: Decimal
+
+
+class BudgetSyncKeyData(BaseModel):
+    key_hash_id: str
+    spend: Decimal
+    max_budget: Decimal | None = None
+    budget_duration: str | None = None
+    budget_limits: list[BudgetSyncWindowData] | None = None
+    blocked: bool = False
+
+
+class BudgetSyncData(BaseModel):
+    items: list[BudgetSyncKeyData]

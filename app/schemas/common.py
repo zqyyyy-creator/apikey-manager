@@ -11,6 +11,23 @@ class ApiResponse(BaseModel, Generic[T]):
     data: T | None = Field(default=None, description="Response payload.")
     message: str = Field(description="Human-readable response message.")
 
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "code": 0,
+                    "data": {},
+                    "message": "success",
+                },
+                {
+                    "code": 40000,
+                    "data": None,
+                    "message": "Request parameter error",
+                },
+            ]
+        }
+    }
+
 
 class PageData(BaseModel, Generic[T]):
     items: list[T]

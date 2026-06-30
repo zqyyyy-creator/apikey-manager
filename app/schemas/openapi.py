@@ -55,6 +55,18 @@ COMMON_ERROR_RESPONSES = {
             }
         },
     },
+    500: {
+        "description": "服务内部错误",
+        "content": {
+            "application/json": {
+                "example": {
+                    "code": 50000,
+                    "data": None,
+                    "message": "Internal server error",
+                }
+            }
+        },
+    },
 }
 
 

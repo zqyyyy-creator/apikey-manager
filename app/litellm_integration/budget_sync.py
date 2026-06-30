@@ -30,7 +30,7 @@ class BudgetSyncService:
         ]
         total = self._find_limit(enabled_limits, SpendingLimitType.TOTAL)
 
-        if len(periodic_limits) + (1 if total is not None else 0) > 1:
+        if len(periodic_limits) > 1 or (periodic_limits and total is not None):
             budget_limits = [
                 {
                     "budget_duration": self.PERIODIC_BUDGET_DURATIONS[limit.limit_type],
@@ -38,18 +38,12 @@ class BudgetSyncService:
                 }
                 for limit in periodic_limits
             ]
-            if total is not None:
-                budget_limits.append(
-                    {
-                        "budget_duration": None,
-                        "max_budget": str(total.amount),
-                    }
-                )
             await self.litellm_client.update_key(
                 key=key_hash_id,
                 user_id=user_id,
                 access_token=access_token,
-                clear_max_budget=True,
+                max_budget=Decimal(total.amount) if total is not None else None,
+                clear_max_budget=total is None,
                 clear_budget_duration=True,
                 budget_limits=budget_limits,
             )

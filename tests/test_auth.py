@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
+from app.config import Settings
 from app.dependencies import get_auth_service, get_current_auth_context
 from app.main import app
 from app.schemas.auth import AuthContext
@@ -86,6 +87,23 @@ def test_debug_auth_can_use_dependency_override() -> None:
         },
         "message": "success",
     }
+
+
+def test_debug_routes_are_disabled_by_default_in_prod() -> None:
+    settings = Settings(
+        env_mode="prod",
+        database_url="sqlite+aiosqlite:///:memory:",
+        ch_dbt_host="clickhouse.example.com",
+        ch_dbt_user="user",
+        ch_dbt_password="password",
+        ch_dbt_database="dev_dbt_data",
+        lag_proxy_url="http://lag-proxy",
+        oauth2_introspect_url="http://auth/introspect",
+        internal_api_key="internal-key",
+        billing_service_url="http://billing",
+    )
+
+    assert settings.debug_routes_enabled is False
 
 
 def test_auth_service_authenticate_builds_auth_context() -> None:

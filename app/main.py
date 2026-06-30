@@ -43,7 +43,11 @@ def create_app() -> FastAPI:
     app.add_exception_handler(Exception, unhandled_exception_handler)
 
     app.include_router(health.router)
-    app.include_router(debug.router, dependencies=[Depends(get_current_auth_context)])
+    if settings.debug_routes_enabled:
+        app.include_router(
+            debug.router,
+            dependencies=[Depends(get_current_auth_context)],
+        )
     app.include_router(managed_keys.router)
     app.include_router(billing.router)
     app.include_router(spending_limits.router)
