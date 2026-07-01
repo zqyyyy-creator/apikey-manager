@@ -57,8 +57,10 @@ This checklist summarizes the local/dev validation status against `PLAN.md` and
 - Run spending limit automatic block with a key that has real ClickHouse cost
   `>= 0.01 CNY`.
 - Run unblock/reset spend positive integration when a real blocked key exists.
-- Confirm final ds-api-gateway deployment config for `custom_callbacks.py` and
-  MaaS environment variables.
+- Confirm final ds-api-gateway deployment config for
+  `litellm_plugin/custom_callbacks.py` copied to
+  `ds-api-gateway/litellm/integrations/maas_custom_logger.py` and MaaS
+  environment variables.
 - Keep ClickHouse table naming aligned on
   `dws_para_statements_changelog`.
 

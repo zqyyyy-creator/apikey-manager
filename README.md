@@ -23,6 +23,7 @@ MaaS v2 Client API 用于管理 MaaS 托管的 LiteLLM Key、消费阈值、账�
 
   ```text
   app/litellm_integration/custom_logger.py
+  litellm_plugin/custom_callbacks.py
   ```
 
 ## 关键设计
@@ -198,9 +199,13 @@ CustomLogger 代码维护在：
 
 ```text
 app/litellm_integration/custom_logger.py
+litellm_plugin/custom_callbacks.py
 ```
 
-部署时复制到 `ds-api-gateway`，由 LiteLLM Gateway 加载。CustomLogger 会调用 MaaS 内部接口：
+`app/litellm_integration/custom_logger.py` 是仓库内的开发/测试入口。
+`litellm_plugin/custom_callbacks.py` 是 Gateway 侧可直接复制的插件文件。
+
+部署时复制到 `ds-api-gateway/litellm/integrations/maas_custom_logger.py`，由 LiteLLM Gateway 加载。CustomLogger 会调用 MaaS 内部接口：
 
 ```text
 GET /api/v1/internal/keys/{key_hash_id}/managed
@@ -237,6 +242,7 @@ BILLING_SERVICE_COST_PATH=/api/v1/cost/calculate
 ```text
 docs/litellm_custom_logger_deploy.md
 app/litellm_integration/README.md
+litellm_plugin/README.md
 ```
 
 可选实时计费模式的本地 mock billing service 启动命令：
@@ -317,3 +323,4 @@ K8s 模板说明：
 - `docs/litellm_custom_logger_deploy.md`
 - `docs/final_test_checklist.md`
 - `app/litellm_integration/README.md`
+- `litellm_plugin/README.md`

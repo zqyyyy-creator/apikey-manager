@@ -25,10 +25,16 @@ Source of truth:
 maas-v2-client-api/app/litellm_integration/custom_logger.py
 ```
 
+Gateway-ready copy:
+
+```text
+maas-v2-client-api/litellm_plugin/custom_callbacks.py
+```
+
 Gateway deployment target:
 
 ```text
-ds-api-gateway/custom_callbacks.py
+ds-api-gateway/litellm/integrations/maas_custom_logger.py
 ```
 
 Local-only test helper:
@@ -124,9 +130,9 @@ Add the MaaS callback to LiteLLM Gateway config:
 
 ```yaml
 litellm_settings:
-  callbacks: custom_callbacks.maas_custom_logger
+  callbacks: litellm.integrations.maas_custom_logger.maas_custom_logger
   success_callback: ["prometheus"]
-  failure_callback: ["custom_callbacks.maas_custom_logger"]
+  failure_callback: ["litellm.integrations.maas_custom_logger.maas_custom_logger"]
 ```
 
 If the real Gateway already has callback settings, merge them. Do not remove
@@ -136,9 +142,9 @@ Example with an existing success callback:
 
 ```yaml
 litellm_settings:
-  callbacks: custom_callbacks.maas_custom_logger
+  callbacks: litellm.integrations.maas_custom_logger.maas_custom_logger
   success_callback: ["prometheus", "langfuse"]
-  failure_callback: ["custom_callbacks.maas_custom_logger"]
+  failure_callback: ["litellm.integrations.maas_custom_logger.maas_custom_logger"]
 ```
 
 ## Deployment Steps
@@ -146,8 +152,8 @@ litellm_settings:
 1. Copy the maintained logger into the Gateway repo:
 
    ```bash
-   cp maas-v2-client-api/app/litellm_integration/custom_logger.py \
-      ds-api-gateway/custom_callbacks.py
+   cp maas-v2-client-api/litellm_plugin/custom_callbacks.py \
+      ds-api-gateway/litellm/integrations/maas_custom_logger.py
    ```
 
 2. Add the Gateway environment variables.
